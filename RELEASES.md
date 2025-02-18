@@ -1,14 +1,72 @@
+# NautilusTrader 1.212.0 Beta
+
+Released on TBD (UTC).
+
+### Enhancements
+- Added optional beta weighting and percent option greeks (#2317), thanks @faysou
+- Added precision inference for `TardisCSVDataLoader`, where `price_precision` and `size_precision` are now optional
+- Added `UnixNanos::to_datetime_utc()` in Rust
+- Added `Mark` variant for `PriceType` enum
+- Added mark price handling for `Cache`
+
+### Breaking Changes
+- Removed [talib](https://github.com/nautechsystems/nautilus_trader/tree/develop/nautilus_trader/indicators/ta_lib) subpackage (see deprecations for v1.211.0)
+- Renamed `InterestRateData` to `YieldCurveData`
+- Renamed `Cache.add_interest_rate_curve` to `add_yield_curve`
+- Renamed `Cache.interest_rate_curve` to `yield_curve`
+
+### Internal Improvements
+- Improved error logging for live engines to now include stacktrace for easier debugging
+- Improved Redis queries, error handling and connections (#2295, #2308, #2318), thanks @Pushkarm029
+- Improved validation for `OrderList` to check all orders are for the same instrument ID
+- Refactored data request interfaces into messages (#2260), thanks @faysou
+- Refactored data subscribe interfaces into messages (#2280), thanks @faysou
+- Refactored execution message handling in Rust (#2291), thanks @filipmacek
+- Refined yield curve data (#2300), thanks @faysou
+- Refined bar aggregators in Rust (#2311), thanks @faysou
+- Refined greeks computation (#2312), thanks @faysou
+- Ported `StreamingFeatherWriter` to Rust (#2292), thanks @twitu
+- Ported `update_limit_order` for `OrderMatchingEngine` in Rust (#2301), thanks @filipmacek
+- Ported `update_stop_market_order` for `OrderMatchingEngine` in Rust (#2310), thanks @filipmacek
+- Ported `update_stop_limit_order` for `OrderMatchingEngine` in Rust (#2314), thanks @filipmacek
+- Updated Databento `publishers.json` mappings file(s)
+- Upgraded `datafusion` crate to v45.0.0
+- Upgraded `arrow` and `parquet` crates to v54.1.0
+- Upgraded `databento` crate to v0.20.0 (upgrades the `dbn` crate to v0.28.0)
+
+### Fixes
+- Fixed large difference between `Data` enum variants (#2315), thanks @twitu
+- Fixed `start` and `end` range filtering for `TardisHttpClient` to use API query params
+- Fixed built-in data type Arrow schemas for `StreamingFeatherWriter`, thanks for reporting @netomenoci
+- Fixed memory allocation performance issue for `TardisCSVDataLoader`
+- Fixed `effective` timestamp filtering for `TardisHttpClient` to now only retain latest version at or before `effective`
+- Fixed contract `activation` for Binance Futures, now based on the `onboardDate` field
+
+### Documentation Updates
+- Improved `emulation_trigger` parameter description in docstrings (#2313)
+- Improved docs for emulated orders (#2316)
+
+### Deprecations
+None
+
+---
+
 # NautilusTrader 1.211.0 Beta
 
 Released on 9th February 2025 (UTC).
 
-This release introduces [high-precision mode](https://nautilustrader.io/docs/nightly/concepts/overview#value-types), where value types such as `Price`, `Quantity` and `Money` are now
-backed by 128-bit integers (instead of 64-bit), thereby increasing maximum precision to 16, and vastly expanding the allowable value ranges.
+This release introduces [high-precision mode](https://nautilustrader.io/docs/nightly/concepts/overview#value-types),
+where value types such as `Price`, `Quantity` and `Money` are now backed by 128-bit integers (instead of 64-bit),
+thereby increasing maximum precision to 16, and vastly expanding the allowable value ranges.
 
 This will address precision and value range issues experienced by some crypto users, alleviate higher timeframe bar volume limitations, as well as future proofing the platform.
-See the [RFC](https://github.com/nautechsystems/nautilus_trader/issues/2084) for more details. For an explanation on compiling with or without high-precision mode, see the [precision-mode](https://nautilustrader.io/docs/nightly/getting_started/installation/#precision-mode) section of the installation guide.
 
-This release will be the final version that uses Poetry for package and dependency management.
+See the [RFC](https://github.com/nautechsystems/nautilus_trader/issues/2084) for more details.
+For an explanation on compiling with or without high-precision mode, see the [precision-mode](https://nautilustrader.io/docs/nightly/getting_started/installation/#precision-mode) section of the installation guide.
+
+**For migrating data catalogs due to the breaking changes, see the [data migrations guide](https://nautilustrader.io/docs/nightly/concepts/data#data-migrations)**.
+
+**This release will be the final version that uses Poetry for package and dependency management.**
 
 ### Enhancements
 - Added `high-precision` mode for 128-bit integer backed value types (#2072), thanks @twitu
@@ -41,6 +99,11 @@ This release will be the final version that uses Poetry for package and dependen
 - Renamed `event_logging` config option to `log_events`
 - Renamed `BetfairExecClientConfig.request_account_state_period` to `request_account_state_secs`
 - Moved SQL schema directory to `schemas/sql` (reinstall the Nautilus CLI with `make install-cli`)
+- Changed `OrderBookDelta` Arrow schema to use `FixedSizeBinary` fields to support the new precision modes
+- Changed `OrderBookDepth10` Arrow schema to use `FixedSizeBinary` fields to support the new precision modes
+- Changed `QuoteTick` Arrow schema to use `FixedSizeBinary` fields to support the new precision modes
+- Changed `TradeTick` Arrow schema to use `FixedSizeBinary` fields to support the new precision modes
+- Changed `Bar` Arrow schema to use `FixedSizeBinary` fields to support the new precision modes
 - Changed `BettingInstrument` default `min_notional` to `None`
 - Changed meaning of `ws_connection_delay_secs` for [PolymarketDataClientConfig](https://github.com/nautechsystems/nautilus_trader/blob/develop/nautilus_trader/adapters/polymarket/config.py) to be **non-initial** delay (#2271)
 - Changed `GATEIO` Tardis venue to `GATE_IO` for consistency with `CRYPTO_COM` and `BLOCKCHAIN_COM`

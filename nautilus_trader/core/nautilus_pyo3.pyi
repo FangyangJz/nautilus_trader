@@ -168,6 +168,7 @@ def ed25519_signature(private_key: bytes, data: str) -> str: ...
 HIGH_PRECISION: Final[bool]
 FIXED_SCALAR: Final[float]
 FIXED_PRECISION: Final[int]
+PRECISION_BYTES: Final[int]
 
 class DataType:
     def __init__(self, type_name: str, metadata: dict[str, str] | None = None) -> None: ...
@@ -932,6 +933,7 @@ class PriceType(Enum):
     ASK = "ASK"
     MID = "MID"
     LAST = "LAST"
+    MARK = "MARK"
 
 class RecordFlag(Enum):
     F_LAST = "F_LAST"
@@ -4625,16 +4627,11 @@ class DatabentoLiveClient:
 def tardis_exchange_from_venue_str(venue_str: str) -> list[str]: ...
 def bar_spec_to_tardis_trade_bar_string(bar_spec: BarSpecification) -> str: ...
 
-def load_tardis_deltas(filepath: str, price_precision: int, size_precision: int, instrument_id: InstrumentId | None, limit: int | None = None) -> list[OrderBookDelta]: ...  # noqa
-def load_tardis_depth10_from_snapshot5(filepath: str, price_precision: int, size_precision: int, instrument_id: InstrumentId | None, limit: int | None = None) -> list[OrderBookDepth10]: ...  # noqa
-def load_tardis_depth10_from_snapshot25(filepath: str, price_precision: int, size_precision: int, instrument_id: InstrumentId | None, limit: int | None = None) -> list[OrderBookDepth10]: ...  # noqa
-def load_tardis_quotes(filepath: str, price_precision: int, size_precision: int, instrument_id: InstrumentId | None, limit: int | None = None) -> list[QuoteTick]: ...  # noqa
-def load_tardis_trades(filepath: str, price_precision: int, size_precision: int, instrument_id: InstrumentId | None, limit: int | None = None) -> list[TradeTick]: ...  # noqa
-def load_tardis_deltas_as_pycapsule(filepath: str, price_precision: int, size_precision: int, instrument_id: InstrumentId | None, limit: int | None = None) -> object: ...  # noqa
-def load_tardis_depth10_from_snapshot5_as_pycapsule(filepath: str, price_precision: int, size_precision: int,  instrument_id: InstrumentId | None, limit: int | None = None) -> object: ...  # noqa
-def load_tardis_depth10_from_snapshot25_as_pycapsule(filepath: str, price_precision: int, size_precision: int,  instrument_id: InstrumentId | None, limit: int | None = None) -> object: ...  # noqa
-def load_tardis_quotes_as_pycapsule(filepath: str, price_precision: int, size_precision: int, instrument_id: InstrumentId | None, limit: int | None = None) -> object: ...  # noqa
-def load_tardis_trades_as_pycapsule(filepath: str, price_precision: int, size_precision: int, instrument_id: InstrumentId | None, limit: int | None = None) -> object: ...  # noqa
+def load_tardis_deltas(filepath: str, price_precision: int | None = None, size_precision: int | None = None, instrument_id: InstrumentId | None = None, limit: int | None = None) -> list[OrderBookDelta]: ...  # noqa
+def load_tardis_depth10_from_snapshot5(filepath: str, price_precision: int | None = None, size_precision: int | None = None, instrument_id: InstrumentId | None = None, limit: int | None = None) -> list[OrderBookDepth10]: ...  # noqa
+def load_tardis_depth10_from_snapshot25(filepath: str, price_precision: int | None = None, size_precision: int | None = None, instrument_id: InstrumentId | None = None, limit: int | None = None) -> list[OrderBookDepth10]: ...  # noqa
+def load_tardis_quotes(filepath: str, price_precision: int | None = None, size_precision: int | None = None, instrument_id: InstrumentId | None = None, limit: int | None = None) -> list[QuoteTick]: ...  # noqa
+def load_tardis_trades(filepath: str, price_precision: int | None = None, size_precision: int | None = None, instrument_id: InstrumentId | None = None, limit: int | None = None) -> list[TradeTick]: ...  # noqa
 
 class InstrumentMiniInfo:
     def __init__(
@@ -4664,17 +4661,18 @@ class TardisHttpClient:
         timeout_secs: int = 60,
         normalize_symbols: bool = True,
     ) -> None: ...
-    async def instrument(self, exchange: str, symbol: str, start: int | None = None, end: int | None = None, ts_init: int | None = None) -> list[Instrument]: ...  # noqa
     async def instruments(
         self,
         exchange: str,
-        start: int | None = None,
-        end: int | None = None,
+        symbol: str | None = None,
         base_currency: list[str] | None = None,
         quote_currency: list[str] | None = None,
         instrument_type: list[str] | None = None,
         contract_type: list[str] | None = None,
         active: bool | None = None,
+        start: int | None = None,
+        end: int | None = None,
+        effective: int | None = None,
         ts_init: int | None = None,
     ) -> list[Instrument]: ...
 
@@ -4841,14 +4839,17 @@ class GreeksData(Data):
     expiry: int
     forward: float
     expiry_in_years: float
+    multiplier: float
+    quantity: float
+    underlying_price: float
     interest_rate: float
+    cost_of_carry: float
     vol: float
     price: float
     delta: float
     gamma: float
     vega: float
     theta: float
-    quantity: float
     itm_prob: float
 
     def __init__(
@@ -4859,24 +4860,27 @@ class GreeksData(Data):
         is_call: bool = True,
         strike: float = 0.0,
         expiry: int = 0,
-        forward: float = 0.0,
         expiry_in_years: float = 0.0,
+        multiplier: float = 0.0,
+        quantity: float = 0.0,
+        underlying_price: float = 0.0,
         interest_rate: float = 0.0,
+        cost_of_carry: float = 0.0,
         vol: float = 0.0,
         price: float = 0.0,
         delta: float = 0.0,
         gamma: float = 0.0,
         vega: float = 0.0,
         theta: float = 0.0,
-        quantity: float = 0.0,
         itm_prob: float = 0.0,
     ): ...
 
     @classmethod
-    def from_delta(cls, instrument_id: InstrumentId, delta: float) -> GreeksData: ...
+    def from_delta(cls, instrument_id: InstrumentId, delta: float, ts_event = 0) -> GreeksData: ...
 
 
 class PortfolioGreeks(Data):
+    price: float
     delta: float
     gamma: float
     vega: float
@@ -4886,6 +4890,7 @@ class PortfolioGreeks(Data):
         self,
         ts_event: int = 0,
         ts_init: int = 0,
+        price: float = 0.0,
         delta: float = 0.0,
         gamma: float = 0.0,
         vega: float = 0.0,
@@ -4893,20 +4898,7 @@ class PortfolioGreeks(Data):
     ): ...
 
 
-class InterestRateData(Data):
-    curve_name: str
-    interest_rate: float
-
-    def __init__(
-        self,
-        ts_event: int = 0,
-        ts_init: int = 0,
-        curve_name: str = "USD",
-        interest_rate: float = 0.05,
-    ): ...
-
-
-class InterestRateCurveData(Data):
+class YieldCurveData(Data):
     curve_name: str
     tenors: np.ndarray
     interest_rates: np.ndarray

@@ -111,6 +111,7 @@ cdef class Cache(CacheFacade):
         # Caches
         self._general: dict[str, bytes] = {}
         self._xrate_symbols: dict[InstrumentId, str] = {}
+        self._mark_prices: dict[InstrumentId, Price] = {}
         self._quote_ticks: dict[InstrumentId, deque[QuoteTick]] = {}
         self._trade_ticks: dict[InstrumentId, deque[TradeTick]] = {}
         self._order_books: dict[InstrumentId, OrderBook] = {}
@@ -126,7 +127,7 @@ cdef class Cache(CacheFacade):
         self._positions: dict[PositionId, Position] = {}
         self._position_snapshots: dict[PositionId, list[bytes]] = {}
         self._greeks: dict[InstrumentId, object] = {}
-        self._interest_rate_curves: dict[str, object] = {}
+        self._yield_curves: dict[str, object] = {}
 
         # Cache index
         self._index_venue_account: dict[Venue, AccountId] = {}
@@ -161,6 +162,76 @@ cdef class Cache(CacheFacade):
         self._log.info("READY")
 
 # -- COMMANDS -------------------------------------------------------------------------------------
+
+    cpdef void cache_all(self):
+        """
+        Clears and loads the currencies, instruments, synthetics, accounts, orders, and positions.
+        from the cache database.
+        """
+        self._log.debug(f"Loading currencies, instruments, synthetics, accounts, orders, and positions cache from database")
+
+        if self._database is not None:
+            result = self._database.load_all()
+            self._currencies = result.get("currencies", {})
+            self._instruments = result.get("instruments", {})
+            self._synthetics = result.get("synthetics", {})
+            self._accounts = result.get("accounts", {})
+            self._orders = result.get("orders", {})
+            self._positions = result.get("positions", {})
+        else:
+            self._currencies = {}
+            self._instruments = {}
+            self._synthetics = {}
+            self._accounts = {}
+            self._orders = {}
+            self._positions = {}
+
+        # Register currencies with internal `CURRENCY_MAP`
+        cdef Currency currency
+        for currency in self._currencies.values():
+            Currency.register_c(currency, overwrite=False)
+
+        # Assign position IDs to contingent orders
+        cdef Order order
+        for order in self._orders.values():
+            if order.contingency_type == ContingencyType.OTO and order.position_id is not None:
+                self._assign_position_id_to_contingencies(order)
+
+        cdef int currencies_count = len(self._currencies)
+        self._log.info(
+            f"Cached {currencies_count} currenc{'y' if currencies_count == 1 else 'ies'} from database",
+            color=LogColor.BLUE if self._currencies else LogColor.NORMAL,
+        )
+
+        cdef int instruments_count = len(self._instruments)
+        self._log.info(
+            f"Cached {instruments_count} instrument{'' if instruments_count == 1 else 's'} from database",
+            color=LogColor.BLUE if self._instruments else LogColor.NORMAL,
+        )
+
+        cdef int synthetics_count = len(self._synthetics)
+        self._log.info(
+            f"Cached {synthetics_count} synthetic instrument{'' if synthetics_count == 1 else 's'} from database",
+            color=LogColor.BLUE if self._synthetics else LogColor.NORMAL,
+        )
+
+        cdef int accounts_count = len(self._accounts)
+        self._log.info(
+            f"Cached {accounts_count} account{'' if accounts_count == 1 else 's'} from database",
+            color=LogColor.BLUE if self._accounts else LogColor.NORMAL,
+        )
+
+        cdef int orders_count = len(self._orders)
+        self._log.info(
+            f"Cached {orders_count} order{'' if orders_count == 1 else 's'} from database",
+            color=LogColor.BLUE if self._orders else LogColor.NORMAL,
+        )
+
+        cdef int positions_count = len(self._positions)
+        self._log.info(
+            f"Cached {positions_count} position{'' if positions_count == 1 else 's'} from database",
+            color=LogColor.BLUE if self._positions else LogColor.NORMAL
+        )
 
     cpdef void cache_general(self):
         """
@@ -727,6 +798,7 @@ cdef class Cache(CacheFacade):
 
         self._general.clear()
         self._xrate_symbols.clear()
+        self._mark_prices.clear()
         self._quote_ticks.clear()
         self._trade_ticks.clear()
         self._order_books.clear()
@@ -1125,6 +1197,23 @@ cdef class Cache(CacheFacade):
         Condition.not_none(order_book, "order_book")
 
         self._order_books[order_book.instrument_id] = order_book
+
+    cpdef void add_mark_price(self, InstrumentId instrument_id, Price price):
+        """
+        Add the given mark price to the cache.
+
+        Parameters
+        ----------
+        instrument_id : InstrumentId
+            The instrument ID for the mark price.
+        price : Price
+            The mark price.
+
+        """
+        Condition.not_none(instrument_id, "instrument_id")
+        Condition.not_none(price, "price")
+
+        self._mark_prices[instrument_id] = price
 
     cpdef void add_quote_tick(self, QuoteTick tick):
         """
@@ -1701,17 +1790,17 @@ cdef class Cache(CacheFacade):
         """
         self._greeks[greeks.instrument_id] = greeks
 
-    cpdef void add_interest_rate_curve(self, object interest_rate_curve):
+    cpdef void add_yield_curve(self, object yield_curve):
         """
-        Add an interest rate curve to the cache.
+        Add a yield curve to the cache.
 
         Parameters
         ----------
-        interest_rate_curve : InterestRateCurveData
-            The interest rate curve to add.
+        yield_curve : YieldCurveData
+            The yield curve to add.
 
         """
-        self._interest_rate_curves[interest_rate_curve.currency] = interest_rate_curve
+        self._yield_curves[yield_curve.curve_name] = yield_curve
 
     cpdef object greeks(self, InstrumentId instrument_id):
         """
@@ -1730,22 +1819,22 @@ cdef class Cache(CacheFacade):
         """
         return self._greeks.get(instrument_id)
 
-    cpdef object interest_rate_curve(self, str currency):
+    cpdef object yield_curve(self, str curve_name):
         """
-        Return the latest cached interest rate curve for the given currency.
+        Return the latest cached yield curve for the given curve name.
 
         Parameters
         ----------
-        currency : str
-            The currency to get the interest rate curve for.
+        curve_name : str
+            The name of the yield curve to get.
 
         Returns
         -------
-        InterestRateCurveData
+        YieldCurveData
             The interest rate curve for the given currency.
 
         """
-        return self._interest_rate_curves.get(currency)
+        return self._yield_curves.get(curve_name)
 
     cpdef void snapshot_position(self, Position position):
         """
@@ -2133,12 +2222,14 @@ cdef class Cache(CacheFacade):
             trade_tick = self.trade_tick(instrument_id)
             if trade_tick is not None:
                 return trade_tick.price
-        else:
+        elif price_type == PriceType.BID or price_type == PriceType.ASK or price_type == PriceType.MID:
             quote_tick = self.quote_tick(instrument_id)
             if quote_tick is not None:
                 return quote_tick.extract_price(price_type)
+        elif price_type == PriceType.MARK:
+            return self._mark_prices.get(instrument_id)
 
-        # Fallback to bar pricing
+        # Fall back to bar pricing for bid, ask and last
         cdef Bar bar
         cdef list bar_types = self.bar_types(instrument_id, price_type, AggregationSource.EXTERNAL)
         if bar_types:
