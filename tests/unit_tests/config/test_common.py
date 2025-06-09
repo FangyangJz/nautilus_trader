@@ -19,9 +19,11 @@ import msgspec
 import pandas as pd
 import pytest
 
+from nautilus_trader.backtest.config import BacktestRunConfig
 from nautilus_trader.common import Environment
 from nautilus_trader.common.config import CUSTOM_DECODINGS
 from nautilus_trader.common.config import CUSTOM_ENCODINGS
+from nautilus_trader.common.config import ActorConfig
 from nautilus_trader.config import DatabaseConfig
 from nautilus_trader.config import ImportableConfig
 from nautilus_trader.config import ImportableStrategyConfig
@@ -33,12 +35,15 @@ from nautilus_trader.config import register_config_decoding
 from nautilus_trader.config import register_config_encoding
 from nautilus_trader.core.uuid import UUID4
 from nautilus_trader.examples.strategies.ema_cross import EMACrossConfig
+from nautilus_trader.live.config import TradingNodeConfig
+from nautilus_trader.model.data import BarSpecification
 from nautilus_trader.model.data import BarType
 from nautilus_trader.model.identifiers import ComponentId
 from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.objects import Price
 from nautilus_trader.model.objects import Quantity
 from nautilus_trader.test_kit.providers import TestInstrumentProvider
+from nautilus_trader.trading.config import StrategyConfig
 
 
 def test_repr_with_redacted_password() -> None:
@@ -81,6 +86,21 @@ def test_fully_qualified_name() -> None:
 
     # Act, Assert
     assert config.fully_qualified_name() == "nautilus_trader.common.config:DatabaseConfig"
+
+
+@pytest.mark.parametrize(
+    "config_cls",
+    [
+        ActorConfig,
+        StrategyConfig,
+        InstrumentProviderConfig,
+        BacktestRunConfig,
+        TradingNodeConfig,
+    ],
+)
+def test_json_schema(config_cls):
+    schema = config_cls.json_schema()
+    assert isinstance(schema, dict), f"Schema for {config_cls.__name__} is not a dict"
 
 
 def test_dict() -> None:
@@ -277,6 +297,29 @@ def test_decoding_instrument_id() -> None:
 
     # Assert
     assert result == InstrumentId.from_str(obj)
+
+
+def test_encoding_bar_spec() -> None:
+    # Arrange
+    obj = BarSpecification.from_str("1-DAY-LAST")
+
+    # Act
+    result = msgspec_encoding_hook(obj)
+
+    # Assert
+    assert result == str(obj)
+
+
+def test_decoding_bar_spec() -> None:
+    # Arrange
+    obj_type = BarSpecification
+    obj = "1-DAY-LAST"
+
+    # Act
+    result = msgspec_decoding_hook(obj_type, obj)
+
+    # Assert
+    assert result == BarSpecification.from_str(obj)
 
 
 def test_encoding_bar_type() -> None:

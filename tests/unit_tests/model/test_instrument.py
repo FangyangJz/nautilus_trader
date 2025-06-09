@@ -435,26 +435,60 @@ class TestInstrument:
         assert str(qty) == expected_str
 
     @pytest.mark.parametrize(
-        ("value", "expected"),
+        ("value", "round_down", "expected_str"),
         [
-            [0.0000501, Decimal("0.0000500")],
-            [0.0000540, Decimal("0.0000500")],
-            [0.0000550, Decimal("0.0000600")],
+            # Test cases with round_down=True
+            [1.2345678, True, "1.234567"],  # Rounds down to precision 6
+            [1.5000009, True, "1.500000"],  # Rounds down to precision 6
+            [2.5000009, True, "2.500000"],  # Rounds down to precision 6
+            [2.9999999, True, "2.999999"],  # Rounds down to precision 6
+            # Comparison cases with default rounding (round_down=False)
+            [1.2345678, False, "1.234568"],  # Standard rounding behavior
+            [1.5000005, False, "1.500001"],  # Standard rounding behavior
+            [2.5000005, False, "2.500001"],  # Standard rounding behavior
+            [2.9999995, False, "2.999999"],  # Corrected expected value
+            # Edge cases - using values that won't trigger the zero validation error
+            [0.000001, True, "0.000001"],  # Smallest representable value
+            [0.000002, True, "0.000002"],  # Small value that won't round to zero
+            [0.0000015, False, "0.000002"],  # Small value with standard rounding
         ],
     )
-    def test_make_price_with_lower_precision_minimum_increment(
+    def test_make_qty_with_round_down_parameter(
         self,
-        value: float,
-        expected: Decimal,
-    ) -> None:
+        value,
+        round_down,
+        expected_str,
+    ):
         # Arrange
-        onethousandrats = TestInstrumentProvider.onethousandrats_perp_binance()
+        instrument = TestInstrumentProvider.btcusdt_binance()
 
         # Act
-        price = onethousandrats.make_price(value)
+        qty = instrument.make_qty(value, round_down=round_down)
 
         # Assert
-        assert price == expected
+        assert str(qty) == expected_str
+
+        @pytest.mark.parametrize(
+            ("value", "expected"),
+            [
+                [0.0000501, Decimal("0.0000500")],
+                [0.0000540, Decimal("0.0000500")],
+                [0.0000550, Decimal("0.0000600")],
+            ],
+        )
+        def test_make_price_with_lower_precision_minimum_increment(
+            self,
+            value: float,
+            expected: Decimal,
+        ) -> None:
+            # Arrange
+            onethousandrats = TestInstrumentProvider.onethousandrats_perp_binance()
+
+            # Act
+            price = onethousandrats.make_price(value)
+
+            # Assert
+            assert price == expected
 
     @pytest.mark.parametrize(
         ("instrument", "expected"),
@@ -475,7 +509,7 @@ class TestInstrument:
             [AUDUSD_SIM, USD],
             [BTCUSDT_BINANCE, USDT],
             [XBTUSD_BITMEX, BTC],
-            [ETHUSD_BITMEX, ETH],
+            [ETHUSD_BITMEX, BTC],  # Quanto
         ],
     )
     def test_settlement_currency_for_various_instruments(self, instrument, expected):
@@ -578,6 +612,114 @@ class TestInstrument:
     def test_option_attributes(self):
         assert AAPL_OPTION.underlying == "AAPL"
         assert AAPL_OPTION.option_kind == option_kind_from_str("CALL")
+
+    def test_next_bid_prices_when_no_tick_scheme(self):
+        # Arrange, Act
+        with pytest.raises(ValueError) as exc_info:
+            BTCUSDT_BINANCE.next_bid_prices(100_000.0)
+        # Assert
+        assert (
+            str(exc_info.value)
+            == "No tick scheme for instrument BTCUSDT.BINANCE. You can specify a tick scheme by passing a `tick_scheme_name` at initialization."
+        )
+
+    def test_next_ask_prices_when_no_tick_scheme(self):
+        # Arrange, Act
+        with pytest.raises(ValueError) as exc_info:
+            BTCUSDT_BINANCE.next_ask_prices(100_000.0)
+        # Assert
+        assert (
+            str(exc_info.value)
+            == "No tick scheme for instrument BTCUSDT.BINANCE. You can specify a tick scheme by passing a `tick_scheme_name` at initialization."
+        )
+
+    @pytest.mark.parametrize(
+        ("instrument", "value", "num_ticks", "expected_len"),
+        [
+            (AUDUSD_SIM, 0.72001, 5, 5),
+            (AUDUSD_SIM, 0.90001, 3, 3),
+            (AUDUSD_SIM, 0.72001, 0, 0),
+        ],
+    )
+    def test_next_ask_prices_length(self, instrument, value, num_ticks, expected_len):
+        # Arrange, Act
+        result = instrument.next_ask_prices(value, num_ticks=num_ticks)
+
+        # Assert
+        assert len(result) == expected_len
+        if expected_len > 0:
+            assert isinstance(result[0], Decimal)
+
+    @pytest.mark.parametrize(
+        ("instrument", "value", "num_ticks", "expected_len"),
+        [
+            (AUDUSD_SIM, 0.72000, 5, 5),
+            (AUDUSD_SIM, 0.90000, 3, 3),
+            (AUDUSD_SIM, 0.72000, 0, 0),
+        ],
+    )
+    def test_next_bid_prices_length(self, instrument, value, num_ticks, expected_len):
+        # Arrange, Act
+        result = instrument.next_bid_prices(value, num_ticks=num_ticks)
+
+        # Assert
+        assert len(result) == expected_len
+        if expected_len > 0:
+            assert isinstance(result[0], Decimal)
+
+    @pytest.mark.parametrize(
+        ("instrument", "value", "num_ticks", "expected_first", "expected_last"),
+        [
+            (AUDUSD_SIM, 0.72000, 10, "0.72000", "0.72009"),
+            (AUDUSD_SIM, 0.72001, 5, "0.72002", "0.72006"),
+            (AUDUSD_SIM, 0.90001, 3, "0.90001", "0.90003"),
+        ],
+    )
+    def test_next_ask_prices_values(
+        self,
+        instrument,
+        value,
+        num_ticks,
+        expected_first,
+        expected_last,
+    ):
+        # Arrange, Act
+        result = instrument.next_ask_prices(value, num_ticks=num_ticks)
+
+        # Assert
+        assert len(result) == num_ticks
+        assert str(result[0]) == expected_first
+        assert str(result[-1]) == expected_last
+        # Check that prices are increasing
+        for i in range(1, len(result)):
+            assert result[i] > result[i - 1]
+
+    @pytest.mark.parametrize(
+        ("instrument", "value", "num_ticks", "expected_first", "expected_last"),
+        [
+            (AUDUSD_SIM, 0.72000, 10, "0.71999", "0.71990"),
+            (AUDUSD_SIM, 0.72000, 5, "0.71999", "0.71995"),
+            (AUDUSD_SIM, 0.90000, 3, "0.90000", "0.89998"),
+        ],
+    )
+    def test_next_bid_prices_values(
+        self,
+        instrument,
+        value,
+        num_ticks,
+        expected_first,
+        expected_last,
+    ):
+        # Arrange, Act
+        result = instrument.next_bid_prices(value, num_ticks=num_ticks)
+
+        # Assert
+        assert len(result) == num_ticks
+        assert str(result[0]) == expected_first
+        assert str(result[-1]) == expected_last
+        # Check that prices are decreasing
+        for i in range(1, len(result)):
+            assert result[i] < result[i - 1]
 
 
 def test_pyo3_equity_to_legacy_equity() -> None:

@@ -13,7 +13,6 @@
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
 
-import copy
 import pickle
 import time
 import uuid
@@ -21,6 +20,7 @@ from collections import deque
 from decimal import Decimal
 
 from nautilus_trader.cache.config import CacheConfig
+from nautilus_trader.core import nautilus_pyo3
 from nautilus_trader.core.rust.model import PriceType as PriceType_py
 
 from cpython.datetime cimport datetime
@@ -29,7 +29,6 @@ from libc.stdint cimport uint8_t
 from libc.stdint cimport uint64_t
 
 from nautilus_trader.accounting.accounts.base cimport Account
-from nautilus_trader.accounting.calculators cimport ExchangeRateCalculator
 from nautilus_trader.cache.facade cimport CacheDatabaseFacade
 from nautilus_trader.common.component cimport LogColor
 from nautilus_trader.common.component cimport Logger
@@ -38,16 +37,21 @@ from nautilus_trader.core.rust.model cimport AggregationSource
 from nautilus_trader.core.rust.model cimport ContingencyType
 from nautilus_trader.core.rust.model cimport OmsType
 from nautilus_trader.core.rust.model cimport OrderSide
+from nautilus_trader.core.rust.model cimport OrderStatus
 from nautilus_trader.core.rust.model cimport PositionSide
 from nautilus_trader.core.rust.model cimport PriceType
 from nautilus_trader.core.rust.model cimport TriggerType
+from nautilus_trader.model.book cimport should_handle_own_book_order
 from nautilus_trader.model.data cimport Bar
 from nautilus_trader.model.data cimport BarAggregation
 from nautilus_trader.model.data cimport BarSpecification
 from nautilus_trader.model.data cimport BarType
+from nautilus_trader.model.data cimport IndexPriceUpdate
+from nautilus_trader.model.data cimport MarkPriceUpdate
 from nautilus_trader.model.data cimport QuoteTick
 from nautilus_trader.model.data cimport TradeTick
 from nautilus_trader.model.events.order cimport OrderUpdated
+from nautilus_trader.model.functions cimport order_status_to_pyo3
 from nautilus_trader.model.identifiers cimport AccountId
 from nautilus_trader.model.identifiers cimport ClientId
 from nautilus_trader.model.identifiers cimport ClientOrderId
@@ -100,7 +104,6 @@ cdef class Cache(CacheFacade):
 
         self._database = database
         self._log = Logger(name=type(self).__name__)
-        self._xrate_calculator = ExchangeRateCalculator()
 
         # Configuration
         self._drop_instruments_on_reset = config.drop_instruments_on_reset
@@ -110,23 +113,27 @@ cdef class Cache(CacheFacade):
 
         # Caches
         self._general: dict[str, bytes] = {}
-        self._xrate_symbols: dict[InstrumentId, str] = {}
-        self._quote_ticks: dict[InstrumentId, deque[QuoteTick]] = {}
-        self._trade_ticks: dict[InstrumentId, deque[TradeTick]] = {}
-        self._order_books: dict[InstrumentId, OrderBook] = {}
-        self._bars: dict[BarType, deque[Bar]] = {}
-        self._bars_bid: dict[InstrumentId, Bar] = {}
-        self._bars_ask: dict[InstrumentId, Bar] = {}
         self._currencies: dict[str, Currency] = {}
         self._instruments: dict[InstrumentId, Instrument] = {}
         self._synthetics: dict[InstrumentId, SyntheticInstrument] = {}
+        self._order_books: dict[InstrumentId, OrderBook] = {}
+        self._own_order_books: dict[InstrumentId, nautilus_pyo3.OwnOrderBook] = {}
+        self._quote_ticks: dict[InstrumentId, deque[QuoteTick]] = {}
+        self._trade_ticks: dict[InstrumentId, deque[TradeTick]] = {}
+        self._xrate_symbols: dict[InstrumentId, str] = {}
+        self._mark_xrates: dict[tuple[Currency, Currency], double] = {}
+        self._mark_prices: dict[InstrumentId, MarkPriceUpdate] = {}
+        self._index_prices: dict[InstrumentId, IndexPriceUpdate] = {}
+        self._bars: dict[BarType, deque[Bar]] = {}
+        self._bars_bid: dict[InstrumentId, Bar] = {}
+        self._bars_ask: dict[InstrumentId, Bar] = {}
         self._accounts: dict[AccountId, Account] = {}
         self._orders: dict[ClientOrderId, Order] = {}
         self._order_lists: dict[OrderListId, OrderList] = {}
         self._positions: dict[PositionId, Position] = {}
         self._position_snapshots: dict[PositionId, list[bytes]] = {}
         self._greeks: dict[InstrumentId, object] = {}
-        self._interest_rate_curves: dict[str, object] = {}
+        self._yield_curves: dict[str, object] = {}
 
         # Cache index
         self._index_venue_account: dict[Venue, AccountId] = {}
@@ -147,6 +154,7 @@ cdef class Cache(CacheFacade):
         self._index_exec_spawn_orders: dict[ClientOrderId: set[ClientOrderId]] = {}
         self._index_orders: set[ClientOrderId] = set()
         self._index_orders_open: set[ClientOrderId] = set()
+        self._index_orders_open_pyo3: set[nautilus_pyo3.ClientOrderId] = set()
         self._index_orders_closed: set[ClientOrderId] = set()
         self._index_orders_emulated: set[ClientOrderId] = set()
         self._index_orders_inflight: set[ClientOrderId] = set()
@@ -161,6 +169,76 @@ cdef class Cache(CacheFacade):
         self._log.info("READY")
 
 # -- COMMANDS -------------------------------------------------------------------------------------
+
+    cpdef void cache_all(self):
+        """
+        Clears and loads the currencies, instruments, synthetics, accounts, orders, and positions.
+        from the cache database.
+        """
+        self._log.debug(f"Loading currencies, instruments, synthetics, accounts, orders, and positions cache from database")
+
+        if self._database is not None:
+            result = self._database.load_all()
+            self._currencies = result.get("currencies", {})
+            self._instruments = result.get("instruments", {})
+            self._synthetics = result.get("synthetics", {})
+            self._accounts = result.get("accounts", {})
+            self._orders = result.get("orders", {})
+            self._positions = result.get("positions", {})
+        else:
+            self._currencies = {}
+            self._instruments = {}
+            self._synthetics = {}
+            self._accounts = {}
+            self._orders = {}
+            self._positions = {}
+
+        # Register currencies with internal `CURRENCY_MAP`
+        cdef Currency currency
+        for currency in self._currencies.values():
+            Currency.register_c(currency, overwrite=False)
+
+        # Assign position IDs to contingent orders
+        cdef Order order
+        for order in self._orders.values():
+            if order.contingency_type == ContingencyType.OTO and order.position_id is not None:
+                self._assign_position_id_to_contingencies(order)
+
+        cdef int currencies_count = len(self._currencies)
+        self._log.info(
+            f"Cached {currencies_count} currenc{'y' if currencies_count == 1 else 'ies'} from database",
+            color=LogColor.BLUE if self._currencies else LogColor.NORMAL,
+        )
+
+        cdef int instruments_count = len(self._instruments)
+        self._log.info(
+            f"Cached {instruments_count} instrument{'' if instruments_count == 1 else 's'} from database",
+            color=LogColor.BLUE if self._instruments else LogColor.NORMAL,
+        )
+
+        cdef int synthetics_count = len(self._synthetics)
+        self._log.info(
+            f"Cached {synthetics_count} synthetic instrument{'' if synthetics_count == 1 else 's'} from database",
+            color=LogColor.BLUE if self._synthetics else LogColor.NORMAL,
+        )
+
+        cdef int accounts_count = len(self._accounts)
+        self._log.info(
+            f"Cached {accounts_count} account{'' if accounts_count == 1 else 's'} from database",
+            color=LogColor.BLUE if self._accounts else LogColor.NORMAL,
+        )
+
+        cdef int orders_count = len(self._orders)
+        self._log.info(
+            f"Cached {orders_count} order{'' if orders_count == 1 else 's'} from database",
+            color=LogColor.BLUE if self._orders else LogColor.NORMAL,
+        )
+
+        cdef int positions_count = len(self._positions)
+        self._log.info(
+            f"Cached {positions_count} position{'' if positions_count == 1 else 's'} from database",
+            color=LogColor.BLUE if self._positions else LogColor.NORMAL
+        )
 
     cpdef void cache_general(self):
         """
@@ -339,10 +417,8 @@ cdef class Cache(CacheFacade):
 
     cpdef void build_index(self):
         """
-        Clear the current cache index and re-build.
+        Build the cache index from objects currently held in memory.
         """
-        self.clear_index()
-
         self._log.debug(f"Building index")
         cdef double ts = time.time()
 
@@ -683,6 +759,161 @@ cdef class Cache(CacheFacade):
 
         return residuals
 
+
+    cpdef void purge_closed_orders(self, uint64_t ts_now, uint64_t buffer_secs = 0):
+        """
+        Purge all closed orders from the cache.
+
+        Parameters
+        ----------
+        ts_now : uint64_t
+            The current UNIX timestamp (nanoseconds).
+        buffer_secs : uint64_t, default 0
+            The purge buffer (seconds) from when the order was closed.
+            Only orders that have been closed for at least this amount of time will be purged.
+            A value of 0 means purge all closed orders regardless of when they were closed.
+
+        """
+        cdef str buffer_secs_str = f" with {buffer_secs=:_}" if buffer_secs else ""
+        self._log.debug(f"Purging closed orders{buffer_secs_str}", LogColor.MAGENTA)
+
+        cdef uint64_t buffer_ns = nautilus_pyo3.secs_to_nanos(buffer_secs)
+
+        cdef:
+            ClientOrderId client_order_id
+            Order order
+        for client_order_id in self._index_orders_closed.copy():
+            order = self._orders.get(client_order_id)
+            if order is not None and order.ts_closed + buffer_ns <= ts_now:
+                self.purge_order(client_order_id)
+
+    cpdef void purge_closed_positions(self, uint64_t ts_now, uint64_t buffer_secs = 0):
+        """
+        Purge all closed positions from the cache.
+
+        Parameters
+        ----------
+        ts_now : uint64_t
+            The current UNIX timestamp (nanoseconds).
+        buffer_secs : uint64_t, default 0
+            The purge buffer (seconds) from when the position was closed.
+            Only positions that have been closed for at least this amount of time will be purged.
+            A value of 0 means purge all closed positions regardless of when they were closed.
+
+        """
+        cdef str buffer_secs_str = f" with {buffer_secs=:_}" if buffer_secs else ""
+        self._log.debug(f"Purging closed positions{buffer_secs_str}", LogColor.MAGENTA)
+
+        cdef uint64_t buffer_ns = nautilus_pyo3.secs_to_nanos(buffer_secs)
+
+        cdef:
+            PositionId position_id
+            Position position
+        for position_id in self._index_positions_closed.copy():
+            position = self._positions.get(position_id)
+            if position is not None and position.ts_closed + buffer_ns <= ts_now:
+                self.purge_position(position_id)
+
+    cpdef void purge_order(self, ClientOrderId client_order_id):
+        """
+        Purge the order for the given client order ID from the cache (if found).
+
+        All `OrderFilled` events for the order will also be purged from any associated position.
+
+        Parameters
+        ----------
+        client_order_id : ClientOrderId
+            The client order ID to purge.
+
+        """
+        Condition.not_none(client_order_id, "client_order_id")
+
+        cdef Position position = self.position_for_order(client_order_id)
+
+        if position is not None:
+            position.purge_events_for_order(client_order_id)
+
+        cdef Order order = self._orders.pop(client_order_id, None)
+
+        if order is None:
+            self._log.warning(f"Order {client_order_id} not found when purging")
+        else:
+            self._index_venue_orders[order.instrument_id.venue].discard(client_order_id)
+            self._index_venue_order_ids.pop(order.venue_order_id, None)
+            self._index_instrument_orders[order.instrument_id].discard(client_order_id)
+            if order.position_id is not None:
+                self._index_position_orders[order.position_id].discard(client_order_id)
+            if order.exec_algorithm_id is not None:
+                self._index_exec_algorithm_orders[order.exec_algorithm_id].discard(client_order_id)
+            self._log.info(f"Purged order {client_order_id}", LogColor.BLUE)
+
+        self._index_order_position.pop(client_order_id, None)
+        self._index_order_strategy.pop(client_order_id, None)
+        self._index_order_client.pop(client_order_id, None)
+        self._index_client_order_ids.pop(client_order_id, None)
+        self._index_strategy_orders.pop(client_order_id, None)
+        self._index_exec_spawn_orders.pop(client_order_id, None)
+        self._index_orders.discard(client_order_id)
+        self._index_orders_closed.discard(client_order_id)
+        self._index_orders_emulated.discard(client_order_id)
+        self._index_orders_inflight.discard(client_order_id)
+        self._index_orders_pending_cancel.discard(client_order_id)
+
+    cpdef void purge_position(self, PositionId position_id):
+        """
+        Purge the position for the given position ID from the cache (if found).
+
+        Parameters
+        ----------
+        position_id : PositionId
+            The position ID to purge.
+
+        """
+        Condition.not_none(position_id, "position_id")
+
+        cdef Position position = self._positions.pop(position_id, None)
+        if position is None:
+            self._log.warning(f"Position {position_id} not found when purging")
+        else:
+            self._index_venue_positions[position.instrument_id.venue].discard(position_id)
+            self._index_instrument_positions[position.instrument_id].discard(position_id)
+            self._index_strategy_positions[position.strategy_id].discard(position_id)
+            for client_order_id in position.client_order_ids_c():
+                self._index_order_position.pop(client_order_id, None)
+            self._log.info(f"Purged position {position_id}", LogColor.BLUE)
+
+        self._index_position_strategy.pop(position_id, None)
+        self._index_position_orders.pop(position_id, None)
+        self._index_positions.discard(position_id)
+        self._index_positions_open.discard(position_id)
+        self._index_positions_closed.discard(position_id)
+
+    cpdef void purge_account_events(self, uint64_t ts_now, uint64_t lookback_secs = 0):
+        """
+        Purge all account state events which are outside the lookback window.
+
+        Parameters
+        ----------
+        ts_now : uint64_t
+            The current UNIX timestamp (nanoseconds).
+        lookback_secs : uint64_t, default 0
+            The purge lookback window (seconds) from when the account state event occurred.
+            Only events which are outside the lookback window will be purged.
+            A value of 0 means purge all account state events.
+
+        """
+        cdef str lookback_secs_str = f" with {lookback_secs=:_}" if lookback_secs else ""
+        self._log.debug(f"Purging account events{lookback_secs_str}", LogColor.MAGENTA)
+
+        cdef:
+            Account account
+        for account in self._accounts.values():
+            event_count = account.event_count_c()
+            account.purge_account_events(ts_now, lookback_secs)
+            count_diff = event_count - account.event_count_c()
+            if count_diff > 0:
+                self._log.info(f"Purged {count_diff} event(s) from account {account.id}", LogColor.BLUE)
+
     cpdef void clear_index(self):
         self._log.debug(f"Clearing index")
 
@@ -704,6 +935,7 @@ cdef class Cache(CacheFacade):
         self._index_exec_spawn_orders.clear()
         self._index_orders.clear()
         self._index_orders_open.clear()
+        self._index_orders_open_pyo3.clear()
         self._index_orders_closed.clear()
         self._index_orders_emulated.clear()
         self._index_orders_inflight.clear()
@@ -726,15 +958,19 @@ cdef class Cache(CacheFacade):
         self._log.debug("Resetting cache")
 
         self._general.clear()
-        self._xrate_symbols.clear()
+        self._currencies.clear()
+        self._synthetics.clear()
+        self._order_books.clear()
+        self._own_order_books.clear()
         self._quote_ticks.clear()
         self._trade_ticks.clear()
-        self._order_books.clear()
+        self._xrate_symbols.clear()
+        self._mark_xrates.clear()
+        self._mark_prices.clear()
+        self._index_prices.clear()
         self._bars.clear()
         self._bars_bid.clear()
         self._bars_ask.clear()
-        self._currencies.clear()
-        self._synthetics.clear()
         self._accounts.clear()
         self._orders.clear()
         self._order_lists.clear()
@@ -828,6 +1064,8 @@ cdef class Cache(CacheFacade):
             # 10: Build _index_orders_open -> {ClientOrderId}
             if order.is_open_c():
                 self._index_orders_open.add(client_order_id)
+                if self._own_order_books:
+                    self._index_orders_open_pyo3.add(nautilus_pyo3.ClientOrderId(client_order_id.value))
 
             # 11: Build _index_orders_closed -> {ClientOrderId}
             if order.is_closed_c():
@@ -1126,6 +1364,21 @@ cdef class Cache(CacheFacade):
 
         self._order_books[order_book.instrument_id] = order_book
 
+    cpdef void add_own_order_book(self, own_order_book):
+        """
+        Add the given own order book to the cache.
+
+        Parameters
+        ----------
+        own_order_book : nautilus_pyo3.OwnOrderBook
+            The own order book to add.
+
+        """
+        Condition.not_none(own_order_book, "own_order_book")
+
+        cdef InstrumentId instrument_id = InstrumentId.from_str(own_order_book.instrument_id.value)
+        self._own_order_books[instrument_id] = own_order_book
+
     cpdef void add_quote_tick(self, QuoteTick tick):
         """
         Add the given quote tick to the cache.
@@ -1169,6 +1422,48 @@ cdef class Cache(CacheFacade):
             self._trade_ticks[instrument_id] = ticks
 
         ticks.appendleft(tick)
+
+    cpdef void add_mark_price(self, MarkPriceUpdate mark_price):
+        """
+        Add the given mark price update to the cache.
+
+        Parameters
+        ----------
+        mark_price : MarkPriceUpdate
+            The mark price update to add.
+
+        """
+        Condition.not_none(mark_price, "mark_price")
+
+        mark_prices = self._mark_prices.get(mark_price.instrument_id)
+
+        if not mark_prices:
+            # The instrument_id was not registered
+            mark_prices = deque(maxlen=self.tick_capacity)
+            self._mark_prices[mark_price.instrument_id] = mark_prices
+
+        mark_prices.appendleft(mark_price)
+
+    cpdef void add_index_price(self, IndexPriceUpdate index_price):
+        """
+        Add the given index price update to the cache.
+
+        Parameters
+        ----------
+        index_price : IndexPriceUpdate
+            The index price update to add.
+
+        """
+        Condition.not_none(index_price, "index_price")
+
+        index_prices = self._index_prices.get(index_price.instrument_id)
+
+        if not index_prices:
+            # The instrument_id was not registered
+            index_prices = deque(maxlen=self.tick_capacity)
+            self._index_prices[index_price.instrument_id] = index_prices
+
+        index_prices.appendleft(index_price)
 
     cpdef void add_bar(self, Bar bar):
         """
@@ -1701,17 +1996,17 @@ cdef class Cache(CacheFacade):
         """
         self._greeks[greeks.instrument_id] = greeks
 
-    cpdef void add_interest_rate_curve(self, object interest_rate_curve):
+    cpdef void add_yield_curve(self, object yield_curve):
         """
-        Add an interest rate curve to the cache.
+        Add a yield curve to the cache.
 
         Parameters
         ----------
-        interest_rate_curve : InterestRateCurveData
-            The interest rate curve to add.
+        yield_curve : YieldCurveData
+            The yield curve to add.
 
         """
-        self._interest_rate_curves[interest_rate_curve.currency] = interest_rate_curve
+        self._yield_curves[yield_curve.curve_name] = yield_curve
 
     cpdef object greeks(self, InstrumentId instrument_id):
         """
@@ -1730,22 +2025,22 @@ cdef class Cache(CacheFacade):
         """
         return self._greeks.get(instrument_id)
 
-    cpdef object interest_rate_curve(self, str currency):
+    cpdef object yield_curve(self, str curve_name):
         """
-        Return the latest cached interest rate curve for the given currency.
+        Return the latest cached yield curve for the given curve name.
 
         Parameters
         ----------
-        currency : str
-            The currency to get the interest rate curve for.
+        curve_name : str
+            The name of the yield curve to get.
 
         Returns
         -------
-        InterestRateCurveData
+        YieldCurveData
             The interest rate curve for the given currency.
 
         """
-        return self._interest_rate_curves.get(currency)
+        return self._yield_curves.get(curve_name)
 
     cpdef void snapshot_position(self, Position position):
         """
@@ -1760,11 +2055,11 @@ cdef class Cache(CacheFacade):
 
         """
         cdef PositionId position_id = position.id
-        cdef list snapshots = self._position_snapshots.get(position_id)
+        cdef list[bytes] snapshots = self._position_snapshots.get(position_id)
 
-        # Reassign position ID
-        cdef Position copied_position = copy.deepcopy(position)
-        copied_position.id = PositionId(f"{position.id.to_str()}-{uuid.uuid4()}")
+        # Create snapshot with modified position ID
+        cdef Position copied_position = pickle.loads(pickle.dumps(position))
+        copied_position.id = PositionId(f"{position_id.to_str()}-{uuid.uuid4()}")
         cdef bytes position_pickled = pickle.dumps(copied_position)
 
         if snapshots is not None:
@@ -1885,16 +2180,24 @@ cdef class Cache(CacheFacade):
         if order.is_open_c():
             self._index_orders_closed.discard(order.client_order_id)
             self._index_orders_open.add(order.client_order_id)
+            if self._own_order_books:
+                self._index_orders_open_pyo3.add(nautilus_pyo3.ClientOrderId(order.client_order_id.value))
         elif order.is_closed_c():
             self._index_orders_open.discard(order.client_order_id)
             self._index_orders_pending_cancel.discard(order.client_order_id)
             self._index_orders_closed.add(order.client_order_id)
+            if self._own_order_books:
+                self._index_orders_open_pyo3.discard(nautilus_pyo3.ClientOrderId(order.client_order_id.value))
 
         # Update emulation
         if order.is_closed_c() or order.emulation_trigger == TriggerType.NO_TRIGGER:
             self._index_orders_emulated.discard(order.client_order_id)
         else:
             self._index_orders_emulated.add(order.client_order_id)
+
+        # Update own book
+        if self._own_order_books and should_handle_own_book_order(order):
+            self.update_own_order_book(order)
 
         if self._database is None:
             return
@@ -1915,6 +2218,34 @@ cdef class Cache(CacheFacade):
         Condition.not_none(order, "order")
 
         self._index_orders_pending_cancel.add(order.client_order_id)
+
+    cpdef void update_own_order_book(self, Order order):
+        """
+        Update the own order book for the given order.
+
+        Parameters
+        ----------
+        order : Order
+            The order to update.
+
+        """
+        Condition.not_none(order, "order")
+
+        own_book = self._own_order_books.get(order.instrument_id)
+        if own_book is None:
+            pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(order.instrument_id.value)
+            own_book = nautilus_pyo3.OwnOrderBook(pyo3_instrument_id)
+            self._own_order_books[order.instrument_id] = own_book
+            self._log.debug(f"Initialized {own_book!r}", LogColor.MAGENTA)
+
+        own_book_order = order.to_own_book_order()
+
+        if order.is_closed_c():
+            own_book.delete(own_book_order)
+            self._log.debug(f"Deleted: {own_book_order!r}", LogColor.MAGENTA)
+        else:
+            own_book.update(own_book_order)
+            self._log.debug(f"Updated: {own_book_order!r}", LogColor.MAGENTA)
 
     cpdef void update_position(self, Position position):
         """
@@ -2090,6 +2421,42 @@ cdef class Cache(CacheFacade):
 
         return list(self._trade_ticks.get(instrument_id, []))
 
+    cpdef list mark_prices(self, InstrumentId instrument_id):
+        """
+        Return mark prices for the given instrument ID.
+
+        Parameters
+        ----------
+        instrument_id : InstrumentId
+            The instrument ID for the mark prices to get.
+
+        Returns
+        -------
+        list[MarkPriceUpdate]
+
+        """
+        Condition.not_none(instrument_id, "instrument_id")
+
+        return list(self._mark_prices.get(instrument_id, []))
+
+    cpdef list index_prices(self, InstrumentId instrument_id):
+        """
+        Return index prices for the given instrument ID.
+
+        Parameters
+        ----------
+        instrument_id : InstrumentId
+            The instrument ID for the mark prices to get.
+
+        Returns
+        -------
+        list[IndexPriceUpdate]
+
+        """
+        Condition.not_none(instrument_id, "instrument_id")
+
+        return list(self._index_prices.get(instrument_id, []))
+
     cpdef list bars(self, BarType bar_type):
         """
         Return bars for the given bar type.
@@ -2133,12 +2500,16 @@ cdef class Cache(CacheFacade):
             trade_tick = self.trade_tick(instrument_id)
             if trade_tick is not None:
                 return trade_tick.price
-        else:
+        elif price_type == PriceType.BID or price_type == PriceType.ASK or price_type == PriceType.MID:
             quote_tick = self.quote_tick(instrument_id)
             if quote_tick is not None:
                 return quote_tick.extract_price(price_type)
+        elif price_type == PriceType.MARK:
+            mark_price = self.mark_price(instrument_id)
+            if mark_price is not None:
+                return mark_price.value
 
-        # Fallback to bar pricing
+        # Fall back to bar pricing for bid, ask and last
         cdef Bar bar
         cdef list bar_types = self.bar_types(instrument_id, price_type, AggregationSource.EXTERNAL)
         if bar_types:
@@ -2146,24 +2517,147 @@ cdef class Cache(CacheFacade):
             if bar is not None:
                 return bar.close
 
-    cpdef OrderBook order_book(self, InstrumentId instrument_id):
+    cpdef dict[InstrumentId, Price] prices(self, PriceType price_type):
         """
-        Return the order book for the given instrument ID.
+        Return a map of latest prices per instrument ID for the given price type.
 
         Parameters
         ----------
         instrument_id : InstrumentId
+            The instrument ID for the price.
+        price_type : PriceType
+            The price type for the query.
+
+        Returns
+        -------
+        dict[InstrumentId, Price]
+            Includes key value pairs for prices which exist.
+
+        """
+        cdef set[InstrumentId] instrument_ids = {b.instrument_id for b in self._bars.keys()}
+
+        if price_type == PriceType.LAST:
+            instrument_ids.update(self._trade_ticks.keys())
+        elif price_type == PriceType.BID or price_type == PriceType.ASK or price_type == PriceType.MID:
+            instrument_ids.update(self._quote_ticks.keys())
+        elif price_type == PriceType.MARK:
+            instrument_ids.update(self._mark_prices.keys())
+        else:
+            # Unreachable unless code changes
+            raise ValueError(f"Invalid `PriceType`, was {price_type}")
+
+        cdef dict[InstrumentId, Price] prices_map = {}
+
+        cdef:
+            InstrumentId instrument_id
+            Price price
+        for instrument_id in sorted(instrument_ids):
+            price = self.price(instrument_id, price_type)
+            if price is not None:
+                prices_map[instrument_id] = price
+
+        return prices_map
+
+    cpdef OrderBook order_book(self, InstrumentId instrument_id):
+        """
+        Return the order book for the given instrument ID (if found).
+
+        Parameters
+        ----------
+        instrument_id : InstrumentId
+            The instrument ID for the order book to get.
 
         Returns
         -------
         OrderBook or ``None``
+            If book not found for the instrument ID then returns ``None``.
 
         """
+        Condition.not_none(instrument_id, "instrument_id")
+
         return self._order_books.get(instrument_id)
+
+    cpdef object own_order_book(self, InstrumentId instrument_id):
+        """
+        Return the own order book for the given instrument ID (if found).
+
+        Parameters
+        ----------
+        instrument_id : InstrumentId
+            The instrument ID for the own order book to get.
+            Note this is the standard Cython `InstumentId`.
+
+        Returns
+        -------
+        nautilus_pyo3.OwnOrderBook or ``None``
+            If own book not found for the instrument ID then returns ``None``.
+
+        """
+        Condition.not_none(instrument_id, "instrument_id")
+
+        return self._own_order_books.get(instrument_id)
+
+    cpdef dict[Decimal, list[Order]] own_bid_orders(self, InstrumentId instrument_id, set[OrderStatus] status = None):
+        """
+        Return own bid orders for the given instrument ID (if found).
+
+        Parameters
+        ----------
+        instrument_id : InstrumentId
+            The instrument ID for the own orders to get.
+            Note this is the standard Cython `InstumentId`.
+        status : set[OrderStatus], optional
+            The order status to filter for. Empty price levels after filtering are excluded from the result.
+
+        Returns
+        -------
+        dict[Decimal, list[Order]] or ``None``
+            If own book not found for the instrument ID then returns ``None``.
+
+        """
+        Condition.not_none(instrument_id, "instrument_id")
+
+        own_order_book = self._own_order_books.get(instrument_id)
+        if own_order_book is None:
+            return None
+
+        return process_own_order_map(
+            own_order_book.bids_to_dict({order_status_to_pyo3(s) for s in status} if status is not None else None),
+            self._orders,
+        )
+
+    cpdef dict[Decimal, list[Order]] own_ask_orders(self, InstrumentId instrument_id, set[OrderStatus] status = None):
+        """
+        Return own ask orders for the given instrument ID (if found).
+
+        Parameters
+        ----------
+        instrument_id : InstrumentId
+            The instrument ID for the own orders to get.
+            Note this is the standard Cython `InstumentId`.
+        status : set[OrderStatus], optional
+            The order status to filter for. Empty price levels after filtering are excluded from the result.
+
+        Returns
+        -------
+        dict[Decimal, list[Order]] or ``None``
+            If own book not found for the instrument ID then returns ``None``.
+
+        """
+        Condition.not_none(instrument_id, "instrument_id")
+
+        own_order_book = self._own_order_books.get(instrument_id)
+        if own_order_book is None:
+            return None
+
+        return process_own_order_map(
+            own_order_book.asks_to_dict({order_status_to_pyo3(s) for s in status} if status is not None else None),
+            self._orders,
+        )
 
     cpdef QuoteTick quote_tick(self, InstrumentId instrument_id, int index = 0):
         """
-        Return the quote tick for the given instrument ID at the given index.
+        Return the quote tick for the given instrument ID at the given index (if found).
 
         Last quote tick if no index specified.
 
@@ -2197,7 +2691,7 @@ cdef class Cache(CacheFacade):
 
     cpdef TradeTick trade_tick(self, InstrumentId instrument_id, int index = 0):
         """
-        Return the trade tick for the given instrument ID at the given index
+        Return the trade tick for the given instrument ID at the given index (if found).
 
         Last trade tick if no index specified.
 
@@ -2229,9 +2723,77 @@ cdef class Cache(CacheFacade):
         except IndexError:
             return None
 
+    cpdef MarkPriceUpdate mark_price(self, InstrumentId instrument_id, int index = 0):
+        """
+        Return the mark price for the given instrument ID at the given index (if found).
+
+        Last mark price if no index specified.
+
+        Parameters
+        ----------
+        instrument_id : InstrumentId
+            The instrument ID for the mark price to get.
+        index : int, optional
+            The index for the mark price to get.
+
+        Returns
+        -------
+        MarkPriceUpdate or ``None``
+            If no mark prices or no mark price at index then returns ``None``.
+
+        Notes
+        -----
+        Reverse indexed (most recent mark price at index 0).
+
+        """
+        Condition.not_none(instrument_id, "instrument_id")
+
+        mark_prices = self._mark_prices.get(instrument_id)
+        if not mark_prices:
+            return None
+
+        try:
+            return mark_prices[index]
+        except IndexError:
+            return None
+
+    cpdef IndexPriceUpdate index_price(self, InstrumentId instrument_id, int index = 0):
+        """
+        Return the index price for the given instrument ID at the given index (if found).
+
+        Last index price if no index specified.
+
+        Parameters
+        ----------
+        instrument_id : InstrumentId
+            The instrument ID for the index price to get.
+        index : int, optional
+            The index for the index price to get.
+
+        Returns
+        -------
+        IndexPriceUpdate or ``None``
+            If no index prices or no index price at index then returns ``None``.
+
+        Notes
+        -----
+        Reverse indexed (most recent index price at index 0).
+
+        """
+        Condition.not_none(instrument_id, "instrument_id")
+
+        index_prices = self._index_prices.get(instrument_id)
+        if not index_prices:
+            return None
+
+        try:
+            return index_prices[index]
+        except IndexError:
+            return None
+
     cpdef Bar bar(self, BarType bar_type, int index = 0):
         """
-        Return the bar for the given bar type at the given index.
+        Return the bar for the given bar type at the given index (if found).
 
         Last bar if no index specified.
 
@@ -2285,7 +2847,7 @@ cdef class Cache(CacheFacade):
         if book is None:
             return 0
         else:
-            return book.count
+            return book.update_count
 
     cpdef int quote_tick_count(self, InstrumentId instrument_id):
         """
@@ -2322,6 +2884,42 @@ cdef class Cache(CacheFacade):
         Condition.not_none(instrument_id, "instrument_id")
 
         return len(self._trade_ticks.get(instrument_id, []))
+
+    cpdef int mark_price_count(self, InstrumentId instrument_id):
+        """
+        The count of mark prices for the given instrument ID.
+
+        Parameters
+        ----------
+        instrument_id : InstrumentId
+            The instrument ID for the mark prices.
+
+        Returns
+        -------
+        int
+
+        """
+        Condition.not_none(instrument_id, "instrument_id")
+
+        return len(self._mark_prices.get(instrument_id, []))
+
+    cpdef int index_price_count(self, InstrumentId instrument_id):
+        """
+        The count of index prices for the given instrument ID.
+
+        Parameters
+        ----------
+        instrument_id : InstrumentId
+            The instrument ID for the index prices.
+
+        Returns
+        -------
+        int
+
+        """
+        Condition.not_none(instrument_id, "instrument_id")
+
+        return len(self._index_prices.get(instrument_id, []))
 
     cpdef int bar_count(self, BarType bar_type):
         """
@@ -2396,6 +2994,44 @@ cdef class Cache(CacheFacade):
 
         return self.trade_tick_count(instrument_id) > 0
 
+    cpdef bint has_mark_prices(self, InstrumentId instrument_id):
+        """
+        Return a value indicating whether the cache has mark prices for the
+        given instrument ID.
+
+        Parameters
+        ----------
+        instrument_id : InstrumentId
+            The instrument ID for the mark prices.
+
+        Returns
+        -------
+        bool
+
+        """
+        Condition.not_none(instrument_id, "instrument_id")
+
+        return self.mark_price_count(instrument_id) > 0
+
+    cpdef bint has_index_prices(self, InstrumentId instrument_id):
+        """
+        Return a value indicating whether the cache has index prices for the
+        given instrument ID.
+
+        Parameters
+        ----------
+        instrument_id : InstrumentId
+            The instrument ID for the index prices.
+
+        Returns
+        -------
+        bool
+
+        """
+        Condition.not_none(instrument_id, "instrument_id")
+
+        return self.index_price_count(instrument_id) > 0
+
     cpdef bint has_bars(self, BarType bar_type):
         """
         Return a value indicating whether the cache has bars for the given bar
@@ -2415,7 +3051,7 @@ cdef class Cache(CacheFacade):
 
         return self.bar_count(bar_type) > 0
 
-    cpdef double get_xrate(
+    cpdef get_xrate(
         self,
         Venue venue,
         Currency from_currency,
@@ -2424,6 +3060,8 @@ cdef class Cache(CacheFacade):
     ):
         """
         Return the calculated exchange rate.
+
+        If the exchange rate cannot be calculated then returns ``None``.
 
         Parameters
         ----------
@@ -2438,29 +3076,34 @@ cdef class Cache(CacheFacade):
 
         Returns
         -------
-        double
+        float or ``None``
 
         Raises
         ------
         ValueError
-            If `price_type` is ``LAST``.
+            If `price_type` is ``LAST`` or ``MARK``.
 
         """
         Condition.not_none(from_currency, "from_currency")
         Condition.not_none(to_currency, "to_currency")
 
         if from_currency == to_currency:
-            return Decimal(1)  # No conversion necessary
+            # When the source and target currencies are identical,
+            # no conversion is needed; return an exchange rate of 1.0.
+            return 1.0
 
         cdef tuple quotes = self._build_quote_table(venue)
 
-        return self._xrate_calculator.get_rate(
-            from_currency=from_currency,
-            to_currency=to_currency,
-            price_type=price_type,
-            bid_quotes=quotes[0],  # Bid
-            ask_quotes=quotes[1],  # Ask
-        )
+        try:
+            return nautilus_pyo3.get_exchange_rate(
+                from_currency=from_currency.code,
+                to_currency=to_currency.code,
+                price_type=nautilus_pyo3.PriceType.from_int(price_type),
+                quotes_bid=quotes[0],  # Bid
+                quotes_ask=quotes[1],  # Ask
+            )
+        except ValueError as e:
+            self._log.error(f"Cannot calculate exchange rate: {e!r}")
 
     cdef tuple _build_quote_table(self, Venue venue):
         cdef dict bid_quotes = {}
@@ -2494,6 +3137,100 @@ cdef class Cache(CacheFacade):
             ask_quotes[base_quote] = ask_price.as_f64_c()
 
         return bid_quotes, ask_quotes
+
+    cpdef get_mark_xrate(
+        self,
+        Currency from_currency,
+        Currency to_currency,
+    ):
+        """
+        Return the exchange rate based on mark price.
+
+        Will return ``None`` if an exchange rate has not been set.
+
+        Parameters
+        ----------
+        from_currency : Currency
+            The currency to convert from.
+        to_currency : Currency
+            The currency to convert to.
+
+        Returns
+        -------
+        float or ``None``
+
+        """
+        Condition.not_none(from_currency, "from_currency")
+        Condition.not_none(to_currency, "to_currency")
+
+        if from_currency == to_currency:
+            # When the source and target currencies are identical,
+            # no conversion is needed; return an exchange rate of 1.0.
+            return 1.0
+
+        cdef tuple[Currency, Currency] key = (from_currency, to_currency)
+        return self._mark_xrates.get(key)
+
+    cpdef void set_mark_xrate(
+        self,
+        Currency from_currency,
+        Currency to_currency,
+        double xrate,
+    ):
+        """
+        Set the exchange rate based on mark price.
+
+        Will also set the inverse xrate automatically.
+
+        Parameters
+        ----------
+        from_currency : Currency
+            The base currency for the exchange rate to set.
+        to_currency : Currency
+            The quote currency for the exchange rate to set.
+        xrate : double
+            The exchange rate based on mark price.
+
+        Raises
+        ------
+        ValueError
+            If `xrate` is zero.
+
+        """
+        Condition.not_none(from_currency, "from_currency")
+        Condition.not_none(to_currency, "to_currency")
+        Condition.not_equal(xrate, 0.0, "xrate", "zero")
+
+        self._mark_xrates[(from_currency, to_currency)] = xrate
+        self._mark_xrates[(to_currency, from_currency)] = 1.0 / xrate
+
+    cpdef void clear_mark_xrate(
+        self,
+        Currency from_currency,
+        Currency to_currency,
+    ):
+        """
+        Clear the exchange rate based on mark price.
+
+        Parameters
+        ----------
+        from_currency : Currency
+            The base currency for the exchange rate to clear.
+        to_currency : Currency
+            The quote currency for the exchange rate to clear.
+
+        """
+        Condition.not_none(from_currency, "from_currency")
+        Condition.not_none(to_currency, "to_currency")
+
+        self._mark_xrates.pop((from_currency, to_currency), None)
+
+    cpdef void clear_mark_xrates(self):
+        """
+        Clear the exchange rates based on mark price.
+
+        """
+        self._mark_xrates.clear()
 
 # -- INSTRUMENT QUERIES ---------------------------------------------------------------------------
 
@@ -4198,3 +4935,46 @@ cdef class Cache(CacheFacade):
             return
 
         self._database.heartbeat(timestamp)
+
+    cpdef void audit_own_order_books(self):
+        """
+        Audit all own order books against public order books.
+
+        Ensures:
+         - Closed orders are removed from own order books.
+
+        Logs all failures as errors.
+
+        """
+        self._log.debug("Starting own books audit", LogColor.MAGENTA)
+        cdef double start_us = time.time() * 1_000_000
+
+        for own_book in self._own_order_books.values():
+            own_book.audit_open_orders(self._index_orders_open_pyo3)
+
+        cdef double audit_us = (time.time() * 1_000_000) - start_us
+        self._log.debug(f"Completed own books audit in {int(audit_us)}us", LogColor.MAGENTA)
+
+
+cdef inline dict[Decimal, list[Order]] process_own_order_map(
+    dict[Decimal, list[nautilus_pyo3.OwnBookOrder]] own_order_map,
+    dict[ClientOrderId, Order] order_cache,
+):
+    cdef dict[Decimal, Order] order_map = {}
+
+    cdef:
+        list[Order] orders = []
+        ClientOrderId client_order_id
+        Order order
+    for level_price, own_orders in own_order_map.items():
+        orders = []
+        for own_order in own_orders:
+            client_order_id = ClientOrderId(own_order.client_order_id.value)
+            order = order_cache.get(client_order_id)
+            if order is None:
+                RuntimeError(f"{client_order_id!r} from own book not found in cache")
+            orders.append(order)
+
+        order_map[level_price] = orders
+
+    return order_map

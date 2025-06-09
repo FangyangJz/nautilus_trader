@@ -44,6 +44,7 @@ from nautilus_trader.adapters.dydx.endpoints.market.instruments_info import DYDX
 from nautilus_trader.adapters.dydx.schemas.account.address import DYDXSubaccount
 from nautilus_trader.adapters.dydx.schemas.account.orders import DYDXOrderResponse
 from nautilus_trader.core.datetime import dt_to_unix_nanos
+from nautilus_trader.core.datetime import millis_to_nanos
 from nautilus_trader.core.uuid import UUID4
 from nautilus_trader.execution.reports import OrderStatusReport
 from nautilus_trader.model.data import Bar
@@ -56,6 +57,7 @@ from nautilus_trader.model.enums import AggressorSide
 from nautilus_trader.model.enums import BookAction
 from nautilus_trader.model.enums import OrderSide
 from nautilus_trader.model.enums import RecordFlag
+from nautilus_trader.model.enums import TriggerType
 from nautilus_trader.model.identifiers import AccountId
 from nautilus_trader.model.identifiers import ClientOrderId
 from nautilus_trader.model.identifiers import InstrumentId
@@ -102,6 +104,11 @@ class DYDXCandle(msgspec.Struct, forbid_unknown_fields=True):
         low_price = Price(Decimal(self.low), price_precision)
         close_price = Price(Decimal(self.close), price_precision)
         volume = Quantity(Decimal(self.baseTokenVolume), size_precision)
+
+        ts_event = dt_to_unix_nanos(self.startedAt)
+        interval_ms = bar_type.spec.timedelta / datetime.timedelta(milliseconds=1)
+        ts_event += millis_to_nanos(interval_ms)
+
         return Bar(
             bar_type=bar_type,
             open=open_price,
@@ -109,7 +116,7 @@ class DYDXCandle(msgspec.Struct, forbid_unknown_fields=True):
             low=low_price,
             close=close_price,
             volume=volume,
-            ts_event=dt_to_unix_nanos(self.startedAt),
+            ts_event=ts_event,
             ts_init=ts_init,
         )
 
@@ -339,20 +346,6 @@ class DYDXWsOrderbookMessageSnapshotContents(msgspec.Struct, forbid_unknown_fiel
     bids: list[PriceLevel] | None = None
     asks: list[PriceLevel] | None = None
 
-
-class DYDXWsOrderbookSnapshotChannelData(msgspec.Struct, forbid_unknown_fields=True):
-    """
-    Define the order book snapshot messages.
-    """
-
-    type: str
-    connection_id: str
-    message_id: int
-    channel: str
-    id: str
-    contents: DYDXWsOrderbookMessageSnapshotContents
-    version: str | None = None
-
     def parse_to_snapshot(
         self,
         instrument_id: InstrumentId,
@@ -375,16 +368,16 @@ class DYDXWsOrderbookSnapshotChannelData(msgspec.Struct, forbid_unknown_fields=T
         )
         deltas.append(clear)
 
-        if self.contents.bids is None:
-            self.contents.bids = []
+        if self.bids is None:
+            self.bids = []
 
-        if self.contents.asks is None:
-            self.contents.asks = []
+        if self.asks is None:
+            self.asks = []
 
-        bids_len = len(self.contents.bids)
-        asks_len = len(self.contents.asks)
+        bids_len = len(self.bids)
+        asks_len = len(self.asks)
 
-        for idx, bid in enumerate(self.contents.bids):
+        for idx, bid in enumerate(self.bids):
             flags = 0
             if idx == bids_len - 1 and asks_len == 0:
                 # F_LAST, 1 << 7
@@ -410,7 +403,7 @@ class DYDXWsOrderbookSnapshotChannelData(msgspec.Struct, forbid_unknown_fields=T
 
             deltas.append(delta)
 
-        for idx, ask in enumerate(self.contents.asks):
+        for idx, ask in enumerate(self.asks):
             flags = 0
             if idx == asks_len - 1:
                 # F_LAST, 1 << 7
@@ -434,6 +427,39 @@ class DYDXWsOrderbookSnapshotChannelData(msgspec.Struct, forbid_unknown_fields=T
             deltas.append(delta)
 
         return OrderBookDeltas(instrument_id=instrument_id, deltas=deltas)
+
+
+class DYDXWsOrderbookSnapshotChannelData(msgspec.Struct, forbid_unknown_fields=True):
+    """
+    Define the order book snapshot messages.
+    """
+
+    type: str
+    connection_id: str
+    message_id: int
+    channel: str
+    id: str
+    contents: DYDXWsOrderbookMessageSnapshotContents
+    version: str | None = None
+
+    def parse_to_snapshot(
+        self,
+        instrument_id: InstrumentId,
+        price_precision: int,
+        size_precision: int,
+        ts_event: int,
+        ts_init: int,
+    ) -> OrderBookDeltas:
+        """
+        Parse the order book message into OrderBookDeltas.
+        """
+        return self.contents.parse_to_snapshot(
+            instrument_id,
+            price_precision,
+            size_precision,
+            ts_event,
+            ts_init,
+        )
 
 
 class DYDXWsOrderbookBatchedData(msgspec.Struct, forbid_unknown_fields=True):
@@ -548,15 +574,15 @@ class DYDXWsSubaccountsSubscribedContents(msgspec.Struct, forbid_unknown_fields=
 
         if self.subaccount is not None:
             currency = Currency.from_str(DEFAULT_CURRENCY)
-            free = Decimal(self.subaccount.freeCollateral)
-            total = Decimal(self.subaccount.equity)
-            locked = total - free
+            free = Money(float(self.subaccount.freeCollateral), currency)
+            total = Money(float(self.subaccount.equity), currency)
+            locked = Money(total - free, currency)
 
             return [
                 AccountBalance(
-                    total=Money(total, currency),
-                    locked=Money(locked, currency),
-                    free=Money(free, currency),
+                    total=total,
+                    locked=locked,
+                    free=free,
                 ),
             ]
 
@@ -705,6 +731,15 @@ class DYDXWsOrderSubaccountMessageContents(msgspec.Struct, forbid_unknown_fields
             else Price(0, price_precision)
         )
 
+        trigger_type = (
+            TriggerType.DEFAULT if self.triggerPrice is not None else TriggerType.NO_TRIGGER
+        )
+        trigger_price = (
+            Price(Decimal(self.triggerPrice), price_precision)
+            if self.triggerPrice is not None
+            else None
+        )
+
         return OrderStatusReport(
             account_id=account_id,
             instrument_id=DYDXSymbol(self.ticker).to_instrument_id(),
@@ -730,6 +765,8 @@ class DYDXWsOrderSubaccountMessageContents(msgspec.Struct, forbid_unknown_fields
             report_id=report_id,
             ts_accepted=0,
             ts_init=ts_init,
+            trigger_price=trigger_price,
+            trigger_type=trigger_type,
         )
 
 

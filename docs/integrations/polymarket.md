@@ -13,21 +13,21 @@ while NautilusTrader abstracts the complexity of signing and preparing orders fo
 
 ## Installation
 
-To install the latest `nautilus_trader` package along with the `polymarket` dependencies using pip:
+To install NautilusTrader with Polymarket support:
 
-```
-pip install -U "nautilus_trader[polymarket]"
+```bash
+pip install --upgrade "nautilus_trader[polymarket]"
 ```
 
-To install from source using poetry:
+To build from source with all extras (including Polymarket):
 
-```
-poetry install --extras polymarket
+```bash
+uv sync --all-extras
 ```
 
 ## Examples
 
-You can find working live example scripts [here](https://github.com/nautechsystems/nautilus_trader/tree/develop/examples/live/polymarket/).
+You can find live example scripts [here](https://github.com/nautechsystems/nautilus_trader/tree/develop/examples/live/polymarket/).
 
 ## Binary options
 
@@ -45,9 +45,9 @@ Polymarket offers comprehensive resources for different audiences:
 
 ## Overview
 
-The following documentation assumes a trader is setting up for both live market
-data feeds, and trade execution. The full Polymarket integration consists of an assortment of components,
-which can be used together or separately depending on the user's needs.
+This guide assumes a trader is setting up for both live market data feeds, and trade execution.
+The Polymarket integration adapter includes multiple components, which can be used together or
+separately depending on the use case.
 
 - `PolymarketWebSocketClient`: Low-level WebSocket API connectivity (built on top of the Nautilus `WebSocketClient` written in Rust).
 - `PolymarketInstrumentProvider`: Instrument parsing and loading functionality for `BinaryOption` instruments.
@@ -98,7 +98,8 @@ It sets approvals for the USDC token and Conditional Token Framework (CTF) contr
 Polymarket CLOB Exchange to interact with your funds.
 
 Before running the script, ensure the following prerequisites are met:
-- Install the web3 Python package: `pip install -U web3==5.28`
+
+- Install the web3 Python package: `pip install --upgrade web3==5.28`
 - Have a **Polygon**-compatible wallet funded with some MATIC (used for gas fees).
 - Set the following environment variables in your shell:
   - `POLYGON_PRIVATE_KEY`: Your private key for the **Polygon**-compatible wallet.
@@ -111,7 +112,7 @@ Once you have these in place, the script will:
 
 :::note
 You can also adjust the approval amount in the script instead of using `MAX_INT`,
-with the amount specified in _fractional units_ of **USDC.e**, though this has not been tested.
+with the amount specified in *fractional units* of **USDC.e**, though this has not been tested.
 :::
 
 Ensure that your private key and public key are correctly stored in the environment variables before running the script.
@@ -132,7 +133,7 @@ python nautilus_trader/adapters/polymarket/scripts/set_allowances.py
 
 The script performs the following actions:
 
-- Connects to the Polygon network via an RPC URL (https://polygon-rpc.com/).
+- Connects to the Polygon network via an RPC URL (<https://polygon-rpc.com/>).
 - Signs and sends a transaction to approve the maximum USDC allowance for Polymarket contracts.
 - Sets approval for the CTF contract to manage Conditional Tokens on your behalf.
 - Repeats the approval process for specific addresses like the Polymarket CLOB Exchange and Neg Risk Adapter.
@@ -144,10 +145,12 @@ This allows Polymarket to interact with your funds when executing trades and ens
 To trade with Polymarket using an EOA wallet, follow these steps to generate your API keys:
 
 1. Ensure the following environment variables are set:
-  - `POLYMARKET_PK`: Your private key for signing transactions.
-  - `POLYMARKET_FUNDER`: The wallet address (public key) on the **Polygon** network used for funding trades on Polymarket.
 
-2. Run the script using:
+- `POLYMARKET_PK`: Your private key for signing transactions.
+- `POLYMARKET_FUNDER`: The wallet address (public key) on the **Polygon** network used for funding trades on Polymarket.
+
+1. Run the script using:
+
    ```bash
    python nautilus_trader/adapters/polymarket/scripts/create_api_key.py
    ```
@@ -169,7 +172,7 @@ When setting up NautilusTrader to work with Polymarket, it’s crucial to proper
 
 **Key parameters**
 
-- `private_key`: This is the private key for your external EOA wallet (_not_ the Polymarket wallet accessed through their GUI). This private key allows the system to sign and send transactions on behalf of the external account interacting with Polymarket. If not explicitly provided in the configuration, it will automatically source the `POLYMARKET_PK` environment variable.
+- `private_key`: This is the private key for your external EOA wallet (*not* the Polymarket wallet accessed through their GUI). This private key allows the system to sign and send transactions on behalf of the external account interacting with Polymarket. If not explicitly provided in the configuration, it will automatically source the `POLYMARKET_PK` environment variable.
 - `funder`: This refers to the **USDC.e** wallet address used for funding trades. If not provided, will source the `POLYMARKET_FUNDER` environment variable.
 - API credentials: You will need to provide the following API credentials to interact with the Polymarket CLOB:
   - `api_key`: If not provided, will source the `POLYMARKET_API_KEY` environment variable.
@@ -177,19 +180,59 @@ When setting up NautilusTrader to work with Polymarket, it’s crucial to proper
   - `passphrase`: If not provided, will source the `POLYMARKET_PASSPHRASE` environment variable.
 
 :::tip
-It's recommended you use environment variables for API credentials.
+We recommend using environment variables to manage your credentials.
 :::
 
-## Orders
+## Capability Matrix
 
-The following order types are supported on Polymarket:
-- `MARKET` (executed as a marketable limit order)
-- `LIMIT`
+Polymarket operates as a prediction market with limited order complexity compared to traditional exchanges.
 
-The following time in force options are available:
-- `GTC`: Good-Till-Canceled
-- `GTD`: Good-Till-Date (second granularity based on UNIX time)
-- `FOK`: Fill-Or-Kill
+### Order Types
+
+| Order Type             | Binary Options | Notes                               |
+|------------------------|----------------|-------------------------------------|
+| `MARKET`               | ✓              | Executed as marketable limit order. |
+| `LIMIT`                | ✓              |                                     |
+| `STOP_MARKET`          | -              | *Not supported*.                    |
+| `STOP_LIMIT`           | -              | *Not supported*.                    |
+| `MARKET_IF_TOUCHED`    | -              | *Not supported*.                    |
+| `LIMIT_IF_TOUCHED`     | -              | *Not supported*.                    |
+| `TRAILING_STOP_MARKET` | -              | *Not supported*.                    |
+
+### Execution Instructions
+
+| Instruction   | Binary Options | Notes                                     |
+|---------------|----------------|-------------------------------------------|
+| `post_only`   | -              | *Not supported*.                          |
+| `reduce_only` | -              | *Not supported*.                          |
+
+### Time-in-Force Options
+
+| Time-in-Force | Binary Options | Notes                                     |
+|---------------|----------------|-------------------------------------------|
+| `GTC`         | ✓              | Good Till Canceled.                       |
+| `GTD`         | ✓              | Good Till Date.                           |
+| `FOK`         | ✓              | Fill or Kill.                             |
+| `IOC`         | ✓              | Immediate or Cancel (maps to FAK).        |
+
+### Advanced order features
+
+| Feature            | Binary Options | Notes                                |
+|--------------------|----------------|--------------------------------------|
+| Order Modification | -              | Cancellation functionality only.     |
+| Bracket/OCO Orders | -              | *Not supported*.                     |
+| Iceberg Orders     | -              | *Not supported*.                     |
+
+### Configuration options
+
+The following execution client configuration options are available:
+
+| Option                               | Default | Description                      |
+|--------------------------------------|---------|----------------------------------|
+| `signature_type`                     | `0`     | Polymarket signature type (EOA). |
+| `funder`                             | `None`  | Wallet address for funding USDC transactions. |
+| `generate_order_history_from_trades` | `False` | Experimental feature to generate order reports from trade history (*not recommended*). |
+| `log_raw_ws_messages`                | `False` | If `True`, logs raw WebSocket messages (performance penalty from pretty JSON formatting). |
 
 ## Trades
 

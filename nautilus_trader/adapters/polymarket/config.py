@@ -108,12 +108,17 @@ class PolymarketExecClientConfig(LiveExecClientConfig, frozen=True):
         The WebSocket client custom endpoint override.
     max_retries : PositiveInt, optional
         The maximum number of times a submit or cancel order request will be retried.
-    retry_delay : PositiveFloat, optional
-        The delay (seconds) between retries.
+    retry_delay_initial_ms : PositiveInt, optional
+        The initial delay (milliseconds) between retries. Short delays with frequent retries may result in account bans.
+    retry_delay_max_ms : PositiveInt, optional
+        The maximum delay (milliseconds) between retries.
     generate_order_history_from_trades : bool, default False
         If True, uses trades history to generate reports for orders which are no longer active.
         The Polymarket API only returns active orders and trades.
         This feature is experimental and is not currently recommended (leave set to False).
+    log_raw_ws_messages : bool, default False
+        If raw websocket messages should be logged with debug level.
+        Note: there will be a performance penalty parsing the JSON without an efficient msgspec decoder.
 
     """
 
@@ -127,5 +132,7 @@ class PolymarketExecClientConfig(LiveExecClientConfig, frozen=True):
     base_url_http: str | None = None
     base_url_ws: str | None = None
     max_retries: PositiveInt | None = None
-    retry_delay: PositiveFloat | None = None
+    retry_delay_initial_ms: PositiveInt | None = None
+    retry_delay_max_ms: PositiveInt | None = None
     generate_order_history_from_trades: bool = False
+    log_raw_ws_messages: bool = False

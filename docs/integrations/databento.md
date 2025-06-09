@@ -14,7 +14,7 @@ The capabilities of this adapter include:
 [Databento](https://databento.com/signup) currently offers 125 USD in free data credits (historical data only) for new account sign-ups.
 
 With careful requests, this is more than enough for testing and evaluation purposes.
-It's recommended you make use of the [/metadata.get_cost](https://databento.com/docs/api-reference-historical/metadata/metadata-get-cost) endpoint.
+We recommend you make use of the [/metadata.get_cost](https://databento.com/docs/api-reference-historical/metadata/metadata-get-cost) endpoint.
 :::
 
 ## Overview
@@ -28,6 +28,7 @@ adapter are compiled as static libraries and linked automatically during the bui
 :::
 
 The following adapter classes are available:
+
 - `DatabentoDataLoader`: Loads Databento Binary Encoding (DBN) data from files.
 - `DatabentoInstrumentProvider`: Integrates with the Databento API (HTTP) to provide latest or historical instrument definitions.
 - `DatabentoHistoricalClient`: Integrates with the Databento API (HTTP) for historical market data requests.
@@ -41,12 +42,12 @@ and won't need to necessarily work with these lower level components directly.
 
 ## Examples
 
-You can find working live example scripts [here](https://github.com/nautechsystems/nautilus_trader/tree/develop/examples/live/databento/).
+You can find live example scripts [here](https://github.com/nautechsystems/nautilus_trader/tree/develop/examples/live/databento/).
 
 ## Databento documentation
 
 Databento provides extensive documentation for new users which can be found in the [Databento new users guide](https://databento.com/docs/quickstart/new-user-guides).
-It's recommended you also refer to the Databento documentation in conjunction with this NautilusTrader integration guide.
+We recommend also referring to the Databento documentation in conjunction with this NautilusTrader integration guide.
 
 ## Databento Binary Encoding (DBN)
 
@@ -57,6 +58,7 @@ which enforce a standardized way to normalize market data.
 The integration provides a decoder which can convert DBN format data to Nautilus objects.
 
 The same Rust implemented Nautilus decoder is used for:
+
 - Loading and decoding DBN files from disk
 - Decoding historical and live data in real time
 
@@ -103,6 +105,7 @@ as a venue identifier. You can read more about Databento dataset naming conventi
 Of particular note is for CME Globex MDP 3.0 data (`GLBX.MDP3` dataset code), the following
 exchanges are all grouped under the `GLBX` venue. These mappings can be determined from the
 instruments `exchange` field:
+
 - `CBCM`: XCME-XCBT inter-exchange spread
 - `NYUM`: XNYM-DUMX inter-exchange spread
 - `XCBT`: Chicago Board of Trade (CBOT)
@@ -135,8 +138,10 @@ The exception to this are the `DatabentoImbalance` and `DatabentoStatistics` dat
 
 :::info
 See the following Databento docs for further information:
+
 - [Databento standards and conventions - timestamps](https://databento.com/docs/standards-and-conventions/common-fields-enums-types#timestamps)
 - [Databento timestamping guide](https://databento.com/docs/architecture/timestamping-guide)
+
 :::
 
 ## Data types
@@ -203,6 +208,7 @@ with certain methods which may expect a Cython provided type. There are pyo3 -> 
 object conversion methods available, which can be found in the API reference.
 
 Here is a general pattern for converting a pyo3 `Price` to a Cython `Price`:
+
 ```python
 price = Price.from_raw(pyo3_price.raw, pyo3_price.precision)
 ```
@@ -227,7 +233,7 @@ Or requesting the previous days `statistics` schema for the `ES.FUT` parent symb
 
 ```python
 from nautilus_trader.adapters.databento import DATABENTO_CLIENT_ID
-from nautilus_trader.adapters.databento import DatabentoStatisics
+from nautilus_trader.adapters.databento import DatabentoStatistics
 from nautilus_trader.model import DataType
 
 instrument_id = InstrumentId.from_str("ES.FUT.GLBX")
@@ -236,7 +242,7 @@ metadata = {
     "start": "2024-03-06",
 }
 self.request_data(
-    data_type=DataType(DatabentoImbalance, metadata=metadata),
+    data_type=DataType(DatabentoStatistics, metadata=metadata),
     client_id=DATABENTO_CLIENT_ID,
 )
 ```
@@ -244,6 +250,7 @@ self.request_data(
 ## Performance considerations
 
 When backtesting with Databento DBN data, there are two options:
+
 - Store the data in DBN (`.dbn.zst`) format files and decode to Nautilus objects on every run
 - Convert the DBN files to Nautilus objects and then write to the data catalog once (stored as Nautilus Parquet format on disk)
 
@@ -326,6 +333,7 @@ See also the [Data concepts guide](../concepts/data.md).
 
 The `DatabentoDataClient` is a Python class which contains other Databento adapter classes.
 There are two `DatabentoLiveClient`s per Databento dataset:
+
 - One for MBO (order book deltas) real-time feeds
 - One for all other real-time feeds
 
@@ -391,3 +399,7 @@ node.build()
 - `instrument_ids`: The instrument IDs to request instrument definitions for on start.
 - `timeout_initial_load`: The timeout (seconds) to wait for instruments to load (concurrently per dataset).
 - `mbo_subscriptions_delay`: The timeout (seconds) to wait for MBO/L3 subscriptions (concurrently per dataset). After the timeout the MBO order book feed will start and replay messages from the initial snapshot and then all deltas.
+
+:::tip
+We recommend using environment variables to manage your credentials.
+:::

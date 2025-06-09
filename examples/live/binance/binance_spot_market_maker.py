@@ -16,12 +16,12 @@
 
 from decimal import Decimal
 
-from nautilus_trader.adapters.binance.common.enums import BinanceAccountType
-from nautilus_trader.adapters.binance.config import BinanceDataClientConfig
-from nautilus_trader.adapters.binance.config import BinanceExecClientConfig
-from nautilus_trader.adapters.binance.factories import BinanceLiveDataClientFactory
-from nautilus_trader.adapters.binance.factories import BinanceLiveExecClientFactory
-from nautilus_trader.cache.config import CacheConfig
+from nautilus_trader.adapters.binance import BINANCE
+from nautilus_trader.adapters.binance import BinanceAccountType
+from nautilus_trader.adapters.binance import BinanceDataClientConfig
+from nautilus_trader.adapters.binance import BinanceExecClientConfig
+from nautilus_trader.adapters.binance import BinanceLiveDataClientFactory
+from nautilus_trader.adapters.binance import BinanceLiveExecClientFactory
 from nautilus_trader.config import InstrumentProviderConfig
 from nautilus_trader.config import LiveExecEngineConfig
 from nautilus_trader.config import LoggingConfig
@@ -53,13 +53,14 @@ config_node = TradingNodeConfig(
         # snapshot_positions=True,
         # snapshot_positions_interval_secs=5.0,
         open_check_interval_secs=5.0,
+        # manage_own_order_books=True,
     ),
-    cache=CacheConfig(
-        # database=DatabaseConfig(),
-        timestamps_as_iso8601=True,
-        buffer_interval_ms=100,
-        flush_on_start=False,
-    ),
+    # cache=CacheConfig(
+    #     # database=DatabaseConfig(),
+    #     timestamps_as_iso8601=True,
+    #     buffer_interval_ms=100,
+    #     flush_on_start=False,
+    # ),
     # message_bus=MessageBusConfig(
     #     database=DatabaseConfig(),
     #     encoding="json",
@@ -73,7 +74,7 @@ config_node = TradingNodeConfig(
     # ),
     # streaming=StreamingConfig(catalog_path="catalog"),
     data_clients={
-        "BINANCE": BinanceDataClientConfig(
+        BINANCE: BinanceDataClientConfig(
             api_key=None,  # 'BINANCE_API_KEY' env var
             api_secret=None,  # 'BINANCE_API_SECRET' env var
             account_type=BinanceAccountType.SPOT,
@@ -85,7 +86,7 @@ config_node = TradingNodeConfig(
         ),
     },
     exec_clients={
-        "BINANCE": BinanceExecClientConfig(
+        BINANCE: BinanceExecClientConfig(
             api_key=None,  # 'BINANCE_API_KEY' env var
             api_secret=None,  # 'BINANCE_API_SECRET' env var
             account_type=BinanceAccountType.SPOT,
@@ -95,7 +96,8 @@ config_node = TradingNodeConfig(
             testnet=False,  # If client uses the testnet
             instrument_provider=InstrumentProviderConfig(load_all=True),
             max_retries=3,
-            retry_delay=1.0,
+            retry_delay_initial_ms=1_000,
+            retry_delay_max_ms=10_000,
         ),
     },
     timeout_connection=30.0,
@@ -124,8 +126,8 @@ strategy = VolatilityMarketMaker(config=strat_config)
 node.trader.add_strategy(strategy)
 
 # Register your client factories with the node (can take user-defined factories)
-node.add_data_client_factory("BINANCE", BinanceLiveDataClientFactory)
-node.add_exec_client_factory("BINANCE", BinanceLiveExecClientFactory)
+node.add_data_client_factory(BINANCE, BinanceLiveDataClientFactory)
+node.add_exec_client_factory(BINANCE, BinanceLiveExecClientFactory)
 node.build()
 
 

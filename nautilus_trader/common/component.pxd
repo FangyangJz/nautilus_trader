@@ -19,6 +19,7 @@ from cpython.datetime cimport datetime
 from cpython.datetime cimport timedelta
 from cpython.datetime cimport tzinfo
 from libc.stdint cimport int64_t
+from libc.stdint cimport uint32_t
 from libc.stdint cimport uint64_t
 
 from nautilus_trader.core.fsm cimport FiniteStateMachine
@@ -55,12 +56,14 @@ cdef class Clock:
         datetime alert_time,
         callback: Callable[[TimeEvent], None]=*,
         bint override=*,
+        bint allow_past=*,
     )
     cpdef void set_time_alert_ns(
         self,
         str name,
         uint64_t alert_time_ns,
         callback: Callable[[TimeEvent], None]=*,
+        bint allow_past=*,
     )
     cpdef void set_timer(
         self,
@@ -69,6 +72,7 @@ cdef class Clock:
         datetime start_time=*,
         datetime stop_time=*,
         callback: Callable[[TimeEvent], None]=*,
+        bint allow_past=*,
     )
     cpdef void set_timer_ns(
         self,
@@ -77,6 +81,7 @@ cdef class Clock:
         uint64_t start_time_ns,
         uint64_t stop_time_ns,
         callback: Callable[[TimeEvent], None]=*,
+        bint allow_past=*,
     )
     cpdef void cancel_timer(self, str name)
     cpdef void cancel_timers(self)
@@ -162,12 +167,15 @@ cpdef LogGuard init_logging(
     bint colors=*,
     bint bypass=*,
     bint print_config=*,
+    uint64_t max_file_size=*,
+    uint32_t max_backup_count=*,
 )
 
 # Global static to flag if pyo3 based logging is initialized
 cdef bint LOGGING_PYO3
 cpdef bint is_logging_initialized()
 cpdef void set_logging_pyo3(bint value)
+cpdef void flush_logger()
 
 
 cdef class Logger:
@@ -258,6 +266,7 @@ cdef class MessageBus:
     cdef Clock _clock
     cdef Logger _log
     cdef object _database
+    cdef list[object] _listeners
     cdef dict[Subscription, list[str]] _subscriptions
     cdef dict[str, Subscription[:]] _patterns
     cdef dict[str, object] _endpoints
@@ -293,6 +302,7 @@ cdef class MessageBus:
     cpdef void register(self, str endpoint, handler)
     cpdef void deregister(self, str endpoint, handler)
     cpdef void add_streaming_type(self, type cls)
+    cpdef void add_listener(self, listener)
     cpdef void send(self, str endpoint, msg)
     cpdef void request(self, str endpoint, Request request)
     cpdef void response(self, Response response)
@@ -301,9 +311,6 @@ cdef class MessageBus:
     cpdef void publish(self, str topic, msg, bint external_pub=*)
     cdef void publish_c(self, str topic, msg, bint external_pub=*)
     cdef Subscription[:] _resolve_subscriptions(self, str topic)
-
-
-cdef bint is_matching(str topic, str pattern)
 
 
 cdef class Subscription:

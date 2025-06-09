@@ -175,3 +175,22 @@ class BinanceFuturesFeeRates(msgspec.Struct, frozen=True):
     feeTier: int
     maker: str
     taker: str
+
+
+class BinanceFuturesLeverage(msgspec.Struct, frozen=True):
+    """
+    HTTP response from Binance Futures POST /fapi/v1/leverage.
+    """
+
+    leverage: int
+    maxNotionalValue: str
+    symbol: str
+
+
+class BinanceFuturesMarginTypeResponse(msgspec.Struct, frozen=True):
+    """
+    HTTP response from Binance Futures `POST /fapi/v1/marginType`.
+    """
+
+    code: int
+    msg: str

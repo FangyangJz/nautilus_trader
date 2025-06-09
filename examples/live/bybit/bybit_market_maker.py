@@ -16,12 +16,12 @@
 
 from decimal import Decimal
 
-from nautilus_trader.adapters.bybit.common.enums import BybitProductType
-from nautilus_trader.adapters.bybit.config import BybitDataClientConfig
-from nautilus_trader.adapters.bybit.config import BybitExecClientConfig
-from nautilus_trader.adapters.bybit.factories import BybitLiveDataClientFactory
-from nautilus_trader.adapters.bybit.factories import BybitLiveExecClientFactory
-from nautilus_trader.cache.config import CacheConfig
+from nautilus_trader.adapters.bybit import BYBIT
+from nautilus_trader.adapters.bybit import BybitDataClientConfig
+from nautilus_trader.adapters.bybit import BybitExecClientConfig
+from nautilus_trader.adapters.bybit import BybitLiveDataClientFactory
+from nautilus_trader.adapters.bybit import BybitLiveExecClientFactory
+from nautilus_trader.adapters.bybit import BybitProductType
 from nautilus_trader.config import InstrumentProviderConfig
 from nautilus_trader.config import LiveExecEngineConfig
 from nautilus_trader.config import LoggingConfig
@@ -37,9 +37,6 @@ from nautilus_trader.model.identifiers import TraderId
 # *** THIS IS A TEST STRATEGY WITH NO ALPHA ADVANTAGE WHATSOEVER. ***
 # *** IT IS NOT INTENDED TO BE USED TO TRADE LIVE WITH REAL MONEY. ***
 
-# *** THIS INTEGRATION IS STILL UNDER CONSTRUCTION. ***
-# *** CONSIDER IT TO BE IN AN UNSTABLE BETA PHASE AND EXERCISE CAUTION. ***
-
 # SPOT/LINEAR
 product_type = BybitProductType.LINEAR
 symbol = f"ETHUSDT-{product_type.value.upper()}"
@@ -53,20 +50,33 @@ trade_size = Decimal("0.010")
 # Configure the trading node
 config_node = TradingNodeConfig(
     trader_id=TraderId("TESTER-001"),
-    logging=LoggingConfig(log_level="INFO", use_pyo3=True),
+    logging=LoggingConfig(
+        log_level="INFO",
+        # log_level_file="DEBUG",
+        # log_file_max_size=1_000_000_000,
+        use_pyo3=True,
+    ),
     exec_engine=LiveExecEngineConfig(
         reconciliation=True,
         open_check_interval_secs=5.0,
         open_check_open_only=True,
+        # own_books_audit_interval_secs=2.0,
+        # manage_own_order_books=True,
         # snapshot_orders=True,
         # snapshot_positions=True,
         # snapshot_positions_interval_secs=5.0,
+        purge_closed_orders_interval_mins=15,  # Example of purging closed orders for HFT
+        purge_closed_orders_buffer_mins=60,  # Purged orders closed for at least an hour
+        purge_closed_positions_interval_mins=15,  # Example of purging closed positions for HFT
+        purge_closed_positions_buffer_mins=60,  # Purge positions closed for at least an hour
+        purge_account_events_interval_mins=15,  # Example of purging account events for HFT
+        purge_account_events_lookback_mins=60,  # Purge account events occurring more than an hour ago
     ),
-    cache=CacheConfig(
-        # database=DatabaseConfig(),
-        timestamps_as_iso8601=True,
-        buffer_interval_ms=100,
-    ),
+    # cache=CacheConfig(
+    #     # database=DatabaseConfig(),
+    #     timestamps_as_iso8601=True,
+    #     buffer_interval_ms=100,
+    # ),
     # message_bus=MessageBusConfig(
     #     database=DatabaseConfig(),
     #     timestamps_as_iso8601=True,
@@ -81,7 +91,7 @@ config_node = TradingNodeConfig(
     #     heartbeat_interval_secs=1,
     # ),
     data_clients={
-        "BYBIT": BybitDataClientConfig(
+        BYBIT: BybitDataClientConfig(
             api_key=None,  # 'BYBIT_API_KEY' env var
             api_secret=None,  # 'BYBIT_API_SECRET' env var
             base_url_http=None,  # Override with custom endpoint
@@ -93,7 +103,7 @@ config_node = TradingNodeConfig(
         ),
     },
     exec_clients={
-        "BYBIT": BybitExecClientConfig(
+        BYBIT: BybitExecClientConfig(
             api_key=None,  # 'BYBIT_API_KEY' env var
             api_secret=None,  # 'BYBIT_API_SECRET' env var
             base_url_http=None,  # Override with custom endpoint
@@ -104,7 +114,8 @@ config_node = TradingNodeConfig(
             demo=False,  # If client uses the demo API
             testnet=False,  # If client uses the testnet API
             max_retries=3,
-            retry_delay=1.0,
+            retry_delay_initial_ms=1_000,
+            retry_delay_max_ms=10_000,
             recv_window_ms=5_000,  # Default
         ),
     },
@@ -134,8 +145,8 @@ strategy = VolatilityMarketMaker(config=strat_config)
 node.trader.add_strategy(strategy)
 
 # Register your client factories with the node (can take user-defined factories)
-node.add_data_client_factory("BYBIT", BybitLiveDataClientFactory)
-node.add_exec_client_factory("BYBIT", BybitLiveExecClientFactory)
+node.add_data_client_factory(BYBIT, BybitLiveDataClientFactory)
+node.add_exec_client_factory(BYBIT, BybitLiveExecClientFactory)
 node.build()
 
 

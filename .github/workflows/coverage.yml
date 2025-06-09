@@ -26,23 +26,20 @@ jobs:
         ports:
           - 5432:5432
         options: --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5
-
     steps:
+      # https://github.com/step-security/harden-runner
+      - uses: step-security/harden-runner@4d991eb9b905ef189e4c376166672c3f2f230481 # v2.11.0
+        with:
+          egress-policy: audit
+
       - name: Checkout repository
-        uses: actions/checkout@v4
+        # https://github.com/actions/checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Common setup
         uses: ./.github/actions/common-setup
         with:
           python-version: "3.11"
-
-      - name: Cached test data
-        id: cached-testdata-large
-        uses: actions/cache@v4.2.0
-        with:
-          path: tests/test_data/large
-          key: ${{ runner.os }}-large-files-${{ hashFiles('tests/test_data/large/checksums.json') }}
-          restore-keys: ${{ runner.os }}-large-files-
 
       - name: Install Nautilus CLI and run init postgres
         run: |
@@ -55,10 +52,13 @@ jobs:
           POSTGRES_PASSWORD: pass
           POSTGRES_DATABASE: nautilus
 
-      - name: Run tests with coverage
-        run: make pytest-coverage
+      - name: Cached test data
+        uses: ./.github/actions/common-test-data
 
-      # TODO: Temporarily pause coverage report due pending test data repair
+      # TODO: Temporarily pause coverage due runner receiving shutdown signal (OOM/resources)
+      # - name: Run tests with coverage
+      #   run: bash scripts/test-coverage.sh
+
       # - name: Upload coverage report
       #   uses: codecov/codecov-action@v4
       #   with:

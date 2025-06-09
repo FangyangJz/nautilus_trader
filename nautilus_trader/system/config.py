@@ -30,6 +30,7 @@ from nautilus_trader.execution.config import ImportableExecAlgorithmConfig
 from nautilus_trader.model.identifiers import TraderId
 from nautilus_trader.persistence.config import DataCatalogConfig
 from nautilus_trader.persistence.config import StreamingConfig
+from nautilus_trader.portfolio.config import PortfolioConfig
 from nautilus_trader.risk.config import RiskEngineConfig
 from nautilus_trader.trading.config import ImportableControllerConfig
 from nautilus_trader.trading.strategy import ImportableStrategyConfig
@@ -57,13 +58,14 @@ class NautilusKernelConfig(NautilusConfig, frozen=True):
         The risk engine configuration.
     exec_engine : ExecEngineConfig, optional
         The execution engine configuration.
+    portfolio : PortfolioConfig, optional
+        The portfolio configuration.
     emulator : OrderEmulatorConfig, optional
         The order emulator configuration.
     streaming : StreamingConfig, optional
         The configuration for streaming to feather files.
     catalogs : list[DataCatalogConfig], optional
         The list of data catalog configurations.
-        We assume that catalogs have no duplicate data.
     actors : list[ImportableActorConfig]
         The actor configurations for the kernel.
     strategies : list[ImportableStrategyConfig]
@@ -93,6 +95,12 @@ class NautilusKernelConfig(NautilusConfig, frozen=True):
     timeout_shutdown : PositiveFloat, default 5
         The timeout (seconds) to await pending tasks cancellation during shutdown.
 
+    Notes
+    -----
+    We assume that catalogs have no duplicate data in time series.
+    Also, if some time series are contained in several catalogs (one per month for example), ensure that
+    the DataCatalogConfig list passed to BacktestEngineConfig is ordered in ascending chronological order.
+
     """
 
     environment: Environment
@@ -103,6 +111,7 @@ class NautilusKernelConfig(NautilusConfig, frozen=True):
     data_engine: DataEngineConfig | None = None
     risk_engine: RiskEngineConfig | None = None
     exec_engine: ExecEngineConfig | None = None
+    portfolio: PortfolioConfig | None = None
     emulator: OrderEmulatorConfig | None = None
     streaming: StreamingConfig | None = None
     catalogs: list[DataCatalogConfig] = []

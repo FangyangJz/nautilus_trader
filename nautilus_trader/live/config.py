@@ -90,15 +90,18 @@ class LiveExecEngineConfig(ExecEngineConfig, frozen=True):
     inflight_check_interval_ms : NonNegativeInt, default 2_000
         The interval (milliseconds) between checking whether in-flight orders
         have exceeded their time-in-flight threshold.
-        This should not be set less than the `inflight_check_interval_ms`.
+        This should not be set less than the `inflight_check_threshold_ms`.
     inflight_check_threshold_ms : NonNegativeInt, default 5_000
-        The threshold (milliseconds) beyond which an in-flight orders status
-        is checked with the venue.
+        The threshold (milliseconds) beyond which an in-flight orders status is checked with the venue.
         As a rule of thumb, you shouldn't consider reducing this setting unless you
         are colocated with the venue (to avoid the potential for race conditions).
     inflight_check_retries : NonNegativeInt, default 5
         The number of retry attempts the engine will make to verify the status of an
         in-flight order with the venue, should the initial attempt fail.
+    own_books_audit_interval_secs : NonNegativeFloat, optional
+        The interval (seconds) between auditing all own books against public order books.
+        The audit will ensure all order statuses are in sync and that no closed orders remain in
+        an own book. Logs all failures as errors.
     open_check_interval_secs : PositiveFloat, optional
         The interval (seconds) between checks for open orders at the venue.
         If there is a discrepancy then an order status report is generated and reconciled.
@@ -109,6 +112,30 @@ class LiveExecEngineConfig(ExecEngineConfig, frozen=True):
         If True, the **check_open_orders** requests only currently open orders from the venue.
         If False, it requests the entire order history, which can be a heavy API call.
         This parameter only applies if the **check_open_orders** task is running.
+    purge_closed_orders_interval_mins : PositiveInt, optional
+        The interval (minutes) between purging closed orders from the in-memory cache,
+        **will not purge from the database**. If None, closed orders will **not** be automatically purged.
+        A recommended setting is 10-15 minutes for HFT.
+    purge_closed_orders_buffer_mins : NonNegativeInt, optional
+        The time buffer (minutes) from when an order was closed before it can be purged.
+        Only orders closed for at least this amount of time will be purged.
+        A recommended setting is 60 minutes for HFT.
+    purge_closed_positions_interval_mins : PositiveInt, optional
+        The interval (minutes) between purging closed positions from the in-memory cache,
+        **will not purge from the database**. If None, closed positions will **not** be automatically purged.
+        A recommended setting is 10-15 minutes for HFT.
+    purge_closed_positions_buffer_mins : NonNegativeInt, optional
+        The time buffer (minutes) from when a position was closed before it can be purged.
+        Only positions closed for at least this amount of time will be purged.
+        A recommended setting is 60 minutes for HFT.
+    purge_account_events_interval_mins : PositiveInt, optional
+        The interval (minutes) between purging account events from the in-memory cache,
+        **will not purge from the database**. If None, closed orders will **not** be automatically purged.
+        A recommended setting is 10-15 minutes for HFT.
+    purge_account_events_lookback_mins : NonNegativeInt, optional
+        The time buffer (minutes) from when an account event occurred before it can be purged.
+        Only events outside the lookback window will be purged.
+        A recommended setting is 60 minutes for HFT.
     qsize : PositiveInt, default 100_000
         The queue size for the engines internal queue buffers.
 
@@ -122,8 +149,15 @@ class LiveExecEngineConfig(ExecEngineConfig, frozen=True):
     inflight_check_interval_ms: NonNegativeInt = 2_000
     inflight_check_threshold_ms: NonNegativeInt = 5_000
     inflight_check_retries: NonNegativeInt = 5
+    own_books_audit_interval_secs: PositiveFloat | None = None
     open_check_interval_secs: PositiveFloat | None = None
     open_check_open_only: bool = True
+    purge_closed_orders_interval_mins: PositiveInt | None = None
+    purge_closed_orders_buffer_mins: NonNegativeInt | None = None
+    purge_closed_positions_interval_mins: PositiveInt | None = None
+    purge_closed_positions_buffer_mins: NonNegativeInt | None = None
+    purge_account_events_interval_mins: PositiveInt | None = None
+    purge_account_events_lookback_mins: NonNegativeInt | None = None
     qsize: PositiveInt = 100_000
 
 
@@ -213,7 +247,7 @@ class TradingNodeConfig(NautilusKernelConfig, frozen=True):
 
     Parameters
     ----------
-    trader_id : TraderId, default "TRADER-000"
+    trader_id : TraderId, default "TRADER-001"
         The trader ID for the node (must be a name and ID tag separated by a hyphen).
     cache : CacheConfig, optional
         The cache configuration.
@@ -231,9 +265,13 @@ class TradingNodeConfig(NautilusKernelConfig, frozen=True):
     """
 
     environment: Environment = Environment.LIVE
-    trader_id: TraderId = TraderId("TRADER-001")
+    trader_id: TraderId = "TRADER-001"
     data_engine: LiveDataEngineConfig = LiveDataEngineConfig()
     risk_engine: LiveRiskEngineConfig = LiveRiskEngineConfig()
     exec_engine: LiveExecEngineConfig = LiveExecEngineConfig()
     data_clients: dict[str, LiveDataClientConfig] = {}
     exec_clients: dict[str, LiveExecClientConfig] = {}
+
+    def __post_init__(self):
+        if isinstance(self.trader_id, str):
+            msgspec.structs.force_setattr(self, "trader_id", TraderId(self.trader_id))

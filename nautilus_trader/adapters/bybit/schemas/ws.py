@@ -15,11 +15,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
 import msgspec
 
+# fmt: off
 from nautilus_trader.adapters.bybit.common.enums import BybitEnumParser
 from nautilus_trader.adapters.bybit.common.enums import BybitExecType
 from nautilus_trader.adapters.bybit.common.enums import BybitKlineInterval
@@ -35,9 +37,18 @@ from nautilus_trader.adapters.bybit.common.enums import BybitTriggerType
 from nautilus_trader.adapters.bybit.common.enums import BybitWsOrderRequestMsgOP
 from nautilus_trader.adapters.bybit.common.parsing import parse_bybit_delta
 from nautilus_trader.adapters.bybit.endpoints.trade.amend_order import BybitAmendOrderPostParams
+from nautilus_trader.adapters.bybit.endpoints.trade.batch_amend_order import BybitBatchAmendOrderPostParams
+from nautilus_trader.adapters.bybit.endpoints.trade.batch_cancel_order import BybitBatchCancelOrderPostParams
+from nautilus_trader.adapters.bybit.endpoints.trade.batch_place_order import BybitBatchPlaceOrderPostParams
 from nautilus_trader.adapters.bybit.endpoints.trade.cancel_order import BybitCancelOrderPostParams
 from nautilus_trader.adapters.bybit.endpoints.trade.place_order import BybitPlaceOrderPostParams
 from nautilus_trader.adapters.bybit.schemas.order import BybitAmendOrder
+from nautilus_trader.adapters.bybit.schemas.order import BybitBatchAmendOrderExtInfo
+from nautilus_trader.adapters.bybit.schemas.order import BybitBatchAmendOrderResult
+from nautilus_trader.adapters.bybit.schemas.order import BybitBatchCancelOrderExtInfo
+from nautilus_trader.adapters.bybit.schemas.order import BybitBatchCancelOrderResult
+from nautilus_trader.adapters.bybit.schemas.order import BybitBatchPlaceOrderExtInfo
+from nautilus_trader.adapters.bybit.schemas.order import BybitBatchPlaceOrderResult
 from nautilus_trader.adapters.bybit.schemas.order import BybitCancelOrder
 from nautilus_trader.adapters.bybit.schemas.order import BybitPlaceOrder
 from nautilus_trader.core.datetime import millis_to_nanos
@@ -66,6 +77,8 @@ from nautilus_trader.model.objects import Money
 from nautilus_trader.model.objects import Price
 from nautilus_trader.model.objects import Quantity
 
+
+# fmt: on
 
 if TYPE_CHECKING:
     from nautilus_trader.adapters.bybit.execution import BybitExecutionClient
@@ -128,16 +141,24 @@ class BybitWsKline(msgspec.Struct):
     def parse_to_bar(
         self,
         bar_type: BarType,
+        price_precision: int,
+        size_precision: int,
         ts_init: int,
+        timestamp_on_close: bool,
     ) -> Bar:
+        if timestamp_on_close:
+            ts_event = millis_to_nanos(self.end + 1)
+        else:
+            ts_event = millis_to_nanos(self.start)
+
         return Bar(
             bar_type=bar_type,
-            open=Price.from_str(self.open),
-            high=Price.from_str(self.high),
-            low=Price.from_str(self.low),
-            close=Price.from_str(self.close),
-            volume=Quantity.from_str(self.volume),
-            ts_event=millis_to_nanos(int(self.end) + 1),
+            open=Price(float(self.open), price_precision),
+            high=Price(float(self.high), price_precision),
+            low=Price(float(self.low), price_precision),
+            close=Price(float(self.close), price_precision),
+            volume=Quantity(float(self.volume), size_precision),
+            ts_event=ts_event,
             ts_init=ts_init,
         )
 
@@ -283,27 +304,30 @@ class BybitWsOrderbookDepth(msgspec.Struct):
         if top_ask_size == "0":
             top_ask_size = None
 
+        # Convert the previous quote to new price and sizes to ensure that the precision
+        # of the new Quote is consistent with the instrument definition even after
+        # updates of the instrument.
         return QuoteTick(
             instrument_id=instrument_id,
             bid_price=(
                 Price(float(top_bid_price), price_precision)
                 if top_bid_price
-                else last_quote.bid_price
+                else Price(last_quote.bid_price.as_double(), price_precision)
             ),
             ask_price=(
                 Price(float(top_ask_price), price_precision)
                 if top_ask_price
-                else last_quote.ask_price
+                else Price(last_quote.ask_price.as_double(), price_precision)
             ),
             bid_size=(
                 Quantity(float(top_bid_size), size_precision)
                 if top_bid_size
-                else last_quote.bid_size
+                else Quantity(last_quote.bid_size.as_double(), size_precision)
             ),
             ask_size=(
                 Quantity(float(top_ask_size), size_precision)
                 if top_ask_size
-                else last_quote.ask_size
+                else Quantity(last_quote.ask_size.as_double(), size_precision)
             ),
             ts_event=ts_event,
             ts_init=ts_init,
@@ -433,15 +457,17 @@ class BybitWsTickerOption(msgspec.Struct):
     def parse_to_quote_tick(
         self,
         instrument_id: InstrumentId,
+        price_precision: int,
+        size_precision: int,
         ts_event: int,
         ts_init: int,
     ) -> QuoteTick:
         return QuoteTick(
             instrument_id=instrument_id,
-            bid_price=Price.from_str(self.bidPrice),
-            ask_price=Price.from_str(self.askPrice),
-            bid_size=Quantity.from_str(self.bidSize),
-            ask_size=Quantity.from_str(self.askSize),
+            bid_price=Price(float(self.bidPrice), price_precision),
+            ask_price=Price(float(self.askPrice), price_precision),
+            bid_size=Quantity(float(self.bidSize), size_precision),
+            ask_size=Quantity(float(self.askSize), size_precision),
             ts_event=ts_event,
             ts_init=ts_init,
         )
@@ -838,16 +864,24 @@ class BybitWsOrderRequestMsg(msgspec.Struct, kw_only=True):
     reqId: str | None = None
     header: dict[str, str]
     op: BybitWsOrderRequestMsgOP
-    args: list[
-        BybitPlaceOrderPostParams | BybitAmendOrderPostParams | BybitCancelOrderPostParams
+    args: Sequence[
+        BybitPlaceOrderPostParams
+        | BybitAmendOrderPostParams
+        | BybitCancelOrderPostParams
+        | BybitBatchPlaceOrderPostParams
+        | BybitBatchAmendOrderPostParams
+        | BybitBatchCancelOrderPostParams
     ] = []
 
 
-class BybitWsOrderResponseMsg(msgspec.Struct, kw_only=True):
-    reqId: str | None = None
+class BybitWsOrderResponseMsgGeneral(msgspec.Struct, kw_only=True):
+    op: BybitWsOrderRequestMsgOP
     retCode: int
+    reqId: str | None = None
     retMsg: str
-    op: str
+
+
+class BybitWsOrderResponseMsg(BybitWsOrderResponseMsgGeneral, kw_only=True):
     header: dict[str, str] | None = None
     connId: str
 
@@ -862,3 +896,18 @@ class BybitWsAmendOrderResponseMsg(BybitWsOrderResponseMsg):
 
 class BybitWsCancelOrderResponseMsg(BybitWsOrderResponseMsg):
     data: BybitCancelOrder
+
+
+class BybitWsBatchPlaceOrderResponseMsg(BybitWsOrderResponseMsg):
+    data: BybitBatchPlaceOrderResult
+    retExtInfo: BybitBatchPlaceOrderExtInfo
+
+
+class BybitWsBatchAmendOrderResponseMsg(BybitWsOrderResponseMsg):
+    data: BybitBatchAmendOrderResult
+    retExtInfo: BybitBatchAmendOrderExtInfo
+
+
+class BybitWsBatchCancelOrderResponseMsg(BybitWsOrderResponseMsg):
+    data: BybitBatchCancelOrderResult
+    retExtInfo: BybitBatchCancelOrderExtInfo

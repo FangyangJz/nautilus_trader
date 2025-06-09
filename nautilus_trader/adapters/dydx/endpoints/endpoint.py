@@ -19,12 +19,14 @@ Define the base class for dYdX endpoints.
 from typing import Any
 
 import msgspec
+from msgspec import DecodeError
 
 from nautilus_trader.adapters.dydx.common.enums import DYDXEndpointType
 from nautilus_trader.adapters.dydx.http.client import DYDXHttpClient
 from nautilus_trader.adapters.dydx.http.errors import DYDXError
 from nautilus_trader.adapters.dydx.http.errors import should_retry
 from nautilus_trader.common.component import Logger
+from nautilus_trader.core.nautilus_pyo3 import HttpError
 from nautilus_trader.core.nautilus_pyo3 import HttpMethod
 from nautilus_trader.core.nautilus_pyo3 import HttpTimeoutError
 from nautilus_trader.live.retry import RetryManagerPool
@@ -61,9 +63,11 @@ class DYDXHttpEndpoint:
         self._retry_manager_pool = RetryManagerPool[None](
             pool_size=100,
             max_retries=5,
-            retry_delay_secs=1.0,
+            delay_initial_ms=100,
+            delay_max_ms=5_000,
+            backoff_factor=2,
             logger=Logger(name="DYDXHttpEndpoint"),
-            exc_types=(HttpTimeoutError, DYDXError),
+            exc_types=(HttpTimeoutError, HttpError, DYDXError, DecodeError),
             retry_check=should_retry,
         )
 
@@ -73,12 +77,13 @@ class DYDXHttpEndpoint:
         params: Any | None = None,
         url_path: str | None = None,
     ) -> bytes | None:
-        payload: dict = self.decoder.decode(self.encoder.encode(params))
+        payload: dict[str, Any] = self.decoder.decode(self.encoder.encode(params))
         method_call = self._method_request[self.endpoint_type]
         url_path = url_path or self.url_path
         retry_name = self.name or "http_call"
 
-        async with self._retry_manager_pool as retry_manager:
+        retry_manager = await self._retry_manager_pool.acquire()
+        try:
             result: bytes | None = await retry_manager.run(
                 name=retry_name,
                 details=[url_path, str(params)],
@@ -87,5 +92,7 @@ class DYDXHttpEndpoint:
                 url_path=url_path,
                 payload=payload,
             )
+        finally:
+            await self._retry_manager_pool.release(retry_manager)
 
         return result

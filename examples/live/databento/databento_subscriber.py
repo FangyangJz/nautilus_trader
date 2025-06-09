@@ -21,7 +21,6 @@ from nautilus_trader.adapters.databento import DATABENTO_CLIENT_ID
 from nautilus_trader.adapters.databento import DatabentoDataClientConfig
 from nautilus_trader.adapters.databento import DatabentoLiveDataClientFactory
 from nautilus_trader.cache.config import CacheConfig
-from nautilus_trader.common.config import DatabaseConfig
 from nautilus_trader.common.enums import LogColor
 from nautilus_trader.config import InstrumentProviderConfig
 from nautilus_trader.config import LiveExecEngineConfig
@@ -39,14 +38,11 @@ from nautilus_trader.model.identifiers import TraderId
 from nautilus_trader.trading.strategy import Strategy
 
 
-# *** THIS INTEGRATION IS STILL UNDER CONSTRUCTION. ***
-# *** CONSIDER IT TO BE IN AN UNSTABLE BETA PHASE AND EXERCISE CAUTION. ***
-
 # For correct subscription operation, you must specify all instruments to be immediately
 # subscribed for as part of the data client configuration
 instrument_ids = [
     InstrumentId.from_str("ES.c.0.GLBX"),  # TODO: Continuous contracts only work with GLBX for now
-    # InstrumentId.from_str("ESZ4.XCME"),
+    # InstrumentId.from_str("ESZ5.XCME"),
     # InstrumentId.from_str("ES.FUT.XCME"),
     # InstrumentId.from_str("CL.FUT.NYMEX"),
     # InstrumentId.from_str("LO.OPT.NYMEX"),
@@ -66,7 +62,7 @@ config_node = TradingNodeConfig(
         # snapshot_positions_interval_secs=5.0,
     ),
     cache=CacheConfig(
-        database=DatabaseConfig(),
+        # database=DatabaseConfig(),
         encoding="msgpack",
         timestamps_as_iso8601=True,
         buffer_interval_ms=100,
@@ -91,6 +87,7 @@ config_node = TradingNodeConfig(
             mbo_subscriptions_delay=10.0,
             instrument_ids=instrument_ids,
             parent_symbols={"GLBX.MDP3": {"ES.FUT"}},
+            # venue_dataset_map={"XNAS": "DBEQ.BASIC"},
         ),
     },
     timeout_connection=30.0,

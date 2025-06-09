@@ -33,6 +33,7 @@ from nautilus_trader.common.component cimport MessageBus
 from nautilus_trader.common.component cimport Throttler
 from nautilus_trader.common.messages cimport TradingStateChanged
 from nautilus_trader.core.correctness cimport Condition
+from nautilus_trader.core.datetime cimport unix_nanos_to_dt
 from nautilus_trader.core.message cimport Command
 from nautilus_trader.core.message cimport Event
 from nautilus_trader.core.rust.model cimport AccountType
@@ -40,6 +41,7 @@ from nautilus_trader.core.rust.model cimport InstrumentClass
 from nautilus_trader.core.rust.model cimport OrderSide
 from nautilus_trader.core.rust.model cimport OrderStatus
 from nautilus_trader.core.rust.model cimport OrderType
+from nautilus_trader.core.rust.model cimport TimeInForce
 from nautilus_trader.core.rust.model cimport TradingState
 from nautilus_trader.core.rust.model cimport TriggerType
 from nautilus_trader.core.uuid cimport UUID4
@@ -109,7 +111,7 @@ cdef class RiskEngine(Component):
         Cache cache not None,
         Clock clock not None,
         config: RiskEngineConfig | None = None,
-    ):
+    ) -> None:
         if config is None:
             config = RiskEngineConfig()
         Condition.type(config, RiskEngineConfig, "config")
@@ -264,7 +266,7 @@ cdef class RiskEngine(Component):
 
         if self.is_bypassed:
             self._log.info(
-                "PRE-TRADE RISK CHECKS BYPASSED. This is not advisable for live trading",
+                "PRE-TRADE RISK CHECKS BYPASSED. This is not recommended for live trading",
                 color=LogColor.RED,
             )
 
@@ -553,10 +555,23 @@ cdef class RiskEngine(Component):
         ########################################################################
         # VALIDATION CHECKS
         ########################################################################
+
+        if self.debug:
+            self._log.debug(f"Validating {order}", LogColor.MAGENTA)
+
         if not self._check_order_price(instrument, order):
             return False  # Denied
+
         if not self._check_order_quantity(instrument, order):
             return False  # Denied
+
+        if order.time_in_force == TimeInForce.GTD:
+            if order.expire_time_ns <= self._clock.timestamp_ns():
+                self._deny_order(
+                    order=order,
+                    reason=f"GTD {unix_nanos_to_dt(order.expire_time_ns)} already passed",
+                )
+                return False  # Denied
 
         return True  # Check passed
 
@@ -594,6 +609,7 @@ cdef class RiskEngine(Component):
         ########################################################################
         # RISK CHECKS
         ########################################################################
+
         cdef QuoteTick last_quote = None
         cdef TradeTick last_trade = None
         cdef Price last_px = None
@@ -628,7 +644,11 @@ cdef class RiskEngine(Component):
             Money cash_value = None
             Currency base_currency = None
             double xrate
+            Quantity effective_quantity
         for order in orders:
+            if self.debug:
+                self._log.debug(f"Pre-trade risk check: {order}", LogColor.MAGENTA)
+
             if order.order_type == OrderType.MARKET or order.order_type == OrderType.MARKET_TO_LIMIT:
                 if last_px is None:
                     # Determine entry price
@@ -663,9 +683,17 @@ cdef class RiskEngine(Component):
             else:
                 last_px = order.price
 
-            notional = instrument.notional_value(order.quantity, last_px, use_quote_for_inverse=True)
+            # Convert quote quantity to base quantity if needed for balance calculations
+            if order.is_quote_quantity and not instrument.is_inverse:
+                effective_quantity = instrument.calculate_base_quantity(order.quantity, last_px)
+                if self.debug:
+                    self._log.debug(f"Converted quote quantity {order.quantity} to base quantity {effective_quantity}", LogColor.MAGENTA)
+            else:
+                effective_quantity = order.quantity
+
+            notional = instrument.notional_value(effective_quantity, last_px, use_quote_for_inverse=True)
             if self.debug:
-                self._log.debug(f"Notional: {order_balance_impact!r}", LogColor.MAGENTA)
+                self._log.debug(f"Notional: {notional!r}", LogColor.MAGENTA)
 
             if max_notional and notional._mem.raw > max_notional._mem.raw:
                 self._deny_order(
@@ -698,14 +726,14 @@ cdef class RiskEngine(Component):
                 )
                 return False  # Denied
 
-            order_balance_impact = account.balance_impact(instrument, order.quantity, last_px, order.side)
+            order_balance_impact = account.balance_impact(instrument, effective_quantity, last_px, order.side)
             if self.debug:
                 self._log.debug(f"Balance impact: {order_balance_impact!r}", LogColor.MAGENTA)
 
             if free is not None and (free._mem.raw + order_balance_impact._mem.raw) < 0:
                 self._deny_order(
                     order=order,
-                    reason=f"NOTIONAL_EXCEEDS_FREE_BALANCE: free={free}, notional={order_balance_impact}",
+                    reason=f"NOTIONAL_EXCEEDS_FREE_BALANCE: free={free}, balance_impact={order_balance_impact}",
                 )
                 return False  # Denied
 
@@ -742,7 +770,7 @@ cdef class RiskEngine(Component):
                         )
                         return False  # Denied
                 elif base_currency is not None and account.type == AccountType.CASH:
-                    cash_value = Money(order.quantity.as_f64_c(), base_currency)
+                    cash_value = Money(effective_quantity.as_f64_c(), base_currency)
                     if self.debug:
                         total = account.balance_total(base_currency)
                         locked = account.balance_locked(base_currency)

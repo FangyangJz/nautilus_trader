@@ -267,7 +267,7 @@ class TestPosition:
         [
             [
                 OrderSide.BUY,
-                OrderSide.SELL,  # <--- Different side
+                OrderSide.SELL,  # <-- Different side
                 Price.from_str("1.00001"),
                 Price.from_str("1.00001"),
                 Quantity.from_str("1"),
@@ -275,7 +275,7 @@ class TestPosition:
             ],
             [
                 OrderSide.BUY,
-                OrderSide.SELL,  # <--- Different side
+                OrderSide.SELL,  # <-- Different side
                 Price.from_str("1.00001"),
                 Price.from_str("1.00001"),
                 Quantity.from_str("1"),
@@ -283,7 +283,7 @@ class TestPosition:
             ],
             [
                 OrderSide.BUY,
-                OrderSide.SELL,  # <--- Different side
+                OrderSide.SELL,  # <-- Different side
                 Price.from_str("1.00001"),
                 Price.from_str("1.00001"),
                 Quantity.from_str("1"),
@@ -392,6 +392,7 @@ class TestPosition:
         assert position.quantity == Quantity.from_int(100_000)
         assert position.peak_qty == Quantity.from_int(100_000)
         assert position.size_precision == 0
+        assert position.closing_order_side() == OrderSide.SELL
         assert position.signed_decimal_qty() == Decimal("100000")
         assert position.signed_qty == 100_000.0
         assert position.entry == OrderSide.BUY
@@ -442,6 +443,7 @@ class TestPosition:
         assert position.quantity == Quantity.from_int(100_000)
         assert position.peak_qty == Quantity.from_int(100_000)
         assert position.size_precision == 0
+        assert position.closing_order_side() == OrderSide.BUY
         assert position.signed_decimal_qty() == Decimal("-100000")
         assert position.signed_qty == -100_000.0
         assert position.side == PositionSide.SHORT
@@ -567,7 +569,7 @@ class TestPosition:
             position_id=PositionId("P-123456"),
             strategy_id=StrategyId("S-001"),
             last_px=Price.from_str("1.00001"),
-            ts_filled_ns=1_000_000_000,
+            ts_event=1_000_000_000,
         )
 
         position = Position(instrument=AUDUSD_SIM, fill=fill1)
@@ -934,7 +936,7 @@ class TestPosition:
             position_id=PositionId("P-123456"),
             strategy_id=StrategyId("S-001"),
             last_px=Price.from_str("1.00001"),
-            ts_filled_ns=1_000_000_000,
+            ts_event=1_000_000_000,
         )
 
         position = Position(instrument=AUDUSD_SIM, fill=fill1)
@@ -1317,6 +1319,61 @@ class TestPosition:
         assert position.unrealized_pnl(Price.from_str("370.00")) == Money(4.27745208, ETH)
         assert position.notional_value(Price.from_str("370.00")) == Money(270.27027027, ETH)
 
+    @pytest.mark.parametrize(
+        (
+            "quantity",
+            "last_px",
+            "mark_price",
+            "expected_unrealized",
+            "expected_notional",
+        ),
+        [
+            [
+                Quantity.from_int(100_000),
+                Price.from_str("2.0"),
+                Price.from_str("3.0"),
+                Money(16_666.66666667, BTC),
+                Money(33_333.33333333, BTC),
+            ],
+            # Example from https://www.bitmex.com/app/pnlGuide
+            [
+                Quantity.from_int(1_000),
+                Price.from_str("1000.0"),
+                Price.from_str("1250.0"),
+                Money(0.2, BTC),
+                Money(0.8, BTC),
+            ],
+        ],
+    )
+    def test_calculate_pnl_for_inverse3(
+        self,
+        quantity: Quantity,
+        last_px: Price,
+        mark_price: Price,
+        expected_unrealized: Money,
+        expected_notional: Money,
+    ) -> None:
+        # Arrange
+        order = self.order_factory.market(
+            XBTUSD_BITMEX.id,
+            OrderSide.BUY,
+            quantity=quantity,
+        )
+
+        fill = TestEventStubs.order_filled(
+            order,
+            instrument=XBTUSD_BITMEX,
+            position_id=PositionId("P-1"),
+            strategy_id=StrategyId("S-001"),
+            last_px=last_px,
+        )
+
+        position = Position(instrument=XBTUSD_BITMEX, fill=fill)
+
+        # Act, Assert
+        assert position.unrealized_pnl(mark_price) == expected_unrealized
+        assert position.notional_value(mark_price) == expected_notional
+
     def test_calculate_unrealized_pnl_for_long(self) -> None:
         # Arrange
         order1 = self.order_factory.market(
@@ -1472,3 +1529,80 @@ class TestPosition:
         # Assert
         assert position.signed_qty == expected_signed_qty
         assert position.signed_decimal_qty() == expected_decimal_qty
+
+    def test_purge_order_events(self) -> None:
+        # Arrange
+        order1 = self.order_factory.market(
+            BTCUSDT_BINANCE.id,
+            OrderSide.BUY,
+            Quantity.from_str("2.000000"),
+        )
+
+        order2 = self.order_factory.market(
+            BTCUSDT_BINANCE.id,
+            OrderSide.BUY,
+            Quantity.from_str("2.000000"),
+        )
+
+        fill1 = TestEventStubs.order_filled(
+            order1,
+            instrument=BTCUSDT_BINANCE,
+            position_id=PositionId("P-123456"),
+            strategy_id=StrategyId("S-001"),
+            last_px=Price.from_str("10500.00"),
+        )
+
+        fill2 = TestEventStubs.order_filled(
+            order2,
+            instrument=BTCUSDT_BINANCE,
+            position_id=PositionId("P-123456"),
+            strategy_id=StrategyId("S-001"),
+            last_px=Price.from_str("10500.00"),
+        )
+
+        position = Position(instrument=BTCUSDT_BINANCE, fill=fill1)
+        position.apply(fill2)
+
+        # Act
+        position.purge_events_for_order(fill1.client_order_id)
+
+        # Assert
+        assert len(position.events) == 1
+        assert len(position.trade_ids) == 1
+        assert fill1 not in position.events
+        assert fill2 in position.events
+        assert fill1.trade_id not in position.trade_ids
+        assert fill2.trade_id in position.trade_ids
+
+    def test_purge_all_events_returns_none_for_last_event_and_trade_id(self) -> None:
+        # Arrange
+        order = self.order_factory.market(
+            BTCUSDT_BINANCE.id,
+            OrderSide.BUY,
+            Quantity.from_str("1.000000"),
+        )
+
+        fill = TestEventStubs.order_filled(
+            order,
+            instrument=BTCUSDT_BINANCE,
+            position_id=PositionId("P-123456"),
+            strategy_id=StrategyId("S-001"),
+            last_px=Price.from_str("10500.00"),
+        )
+
+        position = Position(instrument=BTCUSDT_BINANCE, fill=fill)
+
+        # Verify position starts with event
+        assert position.event_count == 1
+        assert position.last_event is not None
+        assert position.last_trade_id is not None
+
+        # Act - Purge all events by purging the only order
+        position.purge_events_for_order(fill.client_order_id)
+
+        # Assert
+        assert position.event_count == 0
+        assert position.events == []
+        assert position.trade_ids == []
+        assert position.last_event is None
+        assert position.last_trade_id is None

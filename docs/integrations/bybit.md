@@ -11,27 +11,27 @@ execution with Bybit.
 
 ## Installation
 
-To install the latest `nautilus_trader` package along with the `bybit` dependencies using pip:
+To install NautilusTrader with Bybit support:
 
-```
-pip install -U "nautilus_trader[bybit]"
+```bash
+pip install --upgrade "nautilus_trader[bybit]"
 ```
 
-To install from source using poetry:
+To build from source with all extras (including Bybit):
 
-```
-poetry install --extras bybit
+```bash
+uv sync --all-extras
 ```
 
 ## Examples
 
-You can find working live example scripts [here](https://github.com/nautechsystems/nautilus_trader/tree/develop/examples/live/bybit/).
+You can find live example scripts [here](https://github.com/nautechsystems/nautilus_trader/tree/develop/examples/live/bybit/).
 
 ## Overview
 
-The following documentation assumes a trader is setting up for both live market
-data feeds, and trade execution. The full Bybit integration consists of an assortment of components,
-which can be used together or separately depending on the user's needs.
+This guide assumes a trader is setting up for both live market data feeds, and trade execution.
+The Bybit adapter includes multiple components, which can be used together or separately depending
+on the use case.
 
 - `BybitHttpClient`: Low-level HTTP API connectivity.
 - `BybitWebSocketClient`: Low-level WebSocket API connectivity.
@@ -85,28 +85,67 @@ for the instrument ID. For example:
 - The BTCUSDT perpetual futures contract is identified with `-LINEAR`, such as `BTCUSDT-LINEAR`.
 - The BTCUSD inverse perpetual futures contract is identified with `-INVERSE`, such as `BTCUSD-INVERSE`.
 
-## Order types
+## Capability Matrix
 
 Bybit offers a flexible combination of trigger types, enabling a broader range of Nautilus orders.
 All the order types listed below can be used as *either* entries or exits, except for trailing stops
 (which utilize a position-related API).
 
-|                        | Spot                 | Derivatives (Linear, Inverse, Options)  |
-|------------------------|----------------------|-----------------------------------------|
-| `MARKET`               | ✓                    | ✓                                       |
-| `LIMIT`                | ✓                    | ✓                                       |
-| `STOP_MARKET`          | ✓                    | ✓                                       |
-| `STOP_LIMIT`           | ✓                    | ✓                                       |
-| `MARKET_IF_TOUCHED`    | ✓                    | ✓                                       |
-| `LIMIT_IF_TOUCHED`     | ✓                    | ✓                                       |
-| `TRAILING_STOP_MARKET` |                      | ✓                                       |
+### Order Types
 
-### Limitations for SPOT
+| Order Type             | Spot | Linear | Inverse | Notes                    |
+|------------------------|------|--------|---------|--------------------------|
+| `MARKET`               | ✓    | ✓      | ✓       |                          |
+| `LIMIT`                | ✓    | ✓      | ✓       |                          |
+| `STOP_MARKET`          | ✓    | ✓      | ✓       |                          |
+| `STOP_LIMIT`           | ✓    | ✓      | ✓       |                          |
+| `MARKET_IF_TOUCHED`    | ✓    | ✓      | ✓       |                          |
+| `LIMIT_IF_TOUCHED`     | ✓    | ✓      | ✓       |                          |
+| `TRAILING_STOP_MARKET` | -    | ✓      | ✓       | Not supported for Spot.  |
+
+### Execution Instructions
+
+| Instruction   | Spot | Linear | Inverse | Notes                             |
+|---------------|------|--------|---------|-----------------------------------|
+| `post_only`   | ✓    | ✓      | ✓       | Only supported on `LIMIT` orders. |
+| `reduce_only` | -    | ✓      | ✓       | Not supported for Spot products.  |
+
+### Time-in-Force Options
+
+| Time-in-Force | Spot | Linear | Inverse | Notes                        |
+|---------------|------|--------|---------|------------------------------|
+| `GTC`         | ✓    | ✓      | ✓       | Good Till Canceled.          |
+| `GTD`         | -    | -      | -       | *Not supported*.             |
+| `FOK`         | ✓    | ✓      | ✓       | Fill or Kill.                |
+| `IOC`         | ✓    | ✓      | ✓       | Immediate or Cancel.         |
+
+### Advanced order features
+
+| Feature            | Spot | Linear | Inverse | Notes                                  |
+|--------------------|------|--------|---------|----------------------------------------|
+| Order Modification | ✓    | ✓      | ✓       | Price and quantity modification.       |
+| Bracket/OCO Orders | ✓    | ✓      | ✓       | UI only; API users implement manually. |
+| Iceberg Orders     | ✓    | ✓      | ✓       | Max 10 per account, 1 per symbol.      |
+
+### Configuration options
+
+The following execution client configuration options affect order behavior:
+
+| Option                       | Default | Description                                          |
+|------------------------------|---------|------------------------------------------------------|
+| `use_gtd`                    | `False` | GTD is not supported; orders are remapped to GTC for local management. |
+| `use_ws_trade_api`           | `False` | If `True`, uses WebSocket for order requests instead of HTTP. |
+| `use_http_batch_api`         | `False` | If `True`, uses HTTP batch API when WebSocket trading is enabled. |
+| `futures_leverages`          | `None`  | Dict to set leverage for futures symbols. |
+| `position_mode`              | `None`  | Dict to set position mode for USDT perpetual and inverse futures. |
+| `margin_mode`                | `None`  | Sets margin mode for the account. |
+
+### Product-Specific Limitations
 
 The following limitations apply to SPOT products, as positions are not tracked on the venue side:
 
-- `reduce_only` orders are not supported
-- Trailing stop orders are not supported
+- `reduce_only` orders are *not supported*.
+- Trailing stop orders are *not supported*.
 
 ### Trailing stops
 
@@ -140,13 +179,14 @@ data and execution clients. To achieve this, add a `BYBIT` section to your clien
 configuration(s):
 
 ```python
-from nautilus_trader.adapters.bybit.common.enums import BybitProductType
+from nautilus_trader.adapters.bybit import BYBIT
+from nautilus_trader.adapters.bybit import BybitProductType
 from nautilus_trader.live.node import TradingNode
 
 config = TradingNodeConfig(
     ...,  # Omitted
     data_clients={
-        "BYBIT": {
+        BYBIT: {
             "api_key": "YOUR_BYBIT_API_KEY",
             "api_secret": "YOUR_BYBIT_API_SECRET",
             "base_url_http": None,  # Override with custom endpoint
@@ -155,7 +195,7 @@ config = TradingNodeConfig(
         },
     },
     exec_clients={
-        "BYBIT": {
+        BYBIT: {
             "api_key": "YOUR_BYBIT_API_KEY",
             "api_secret": "YOUR_BYBIT_API_SECRET",
             "base_url_http": None,  # Override with custom endpoint
@@ -169,16 +209,17 @@ config = TradingNodeConfig(
 Then, create a `TradingNode` and add the client factories:
 
 ```python
-from nautilus_trader.adapters.bybit.factories import BybitLiveDataClientFactory
-from nautilus_trader.adapters.bybit.factories import BybitLiveExecClientFactory
+from nautilus_trader.adapters.bybit import BYBIT
+from nautilus_trader.adapters.bybit import BybitLiveDataClientFactory
+from nautilus_trader.adapters.bybit import BybitLiveExecClientFactory
 from nautilus_trader.live.node import TradingNode
 
 # Instantiate the live trading node with a configuration
 node = TradingNode(config=config)
 
 # Register the client factories with the node
-node.add_data_client_factory("BYBIT", BybitLiveDataClientFactory)
-node.add_exec_client_factory("BYBIT", BybitLiveExecClientFactory)
+node.add_data_client_factory(BYBIT, BybitLiveDataClientFactory)
+node.add_exec_client_factory(BYBIT, BybitLiveExecClientFactory)
 
 # Finally build the node
 node.build()
@@ -191,16 +232,23 @@ Either pass the corresponding `api_key` and `api_secret` values to the configura
 set the following environment variables:
 
 For Bybit live clients, you can set:
+
 - `BYBIT_API_KEY`
 - `BYBIT_API_SECRET`
 
 For Bybit demo clients, you can set:
+
 - `BYBIT_DEMO_API_KEY`
 - `BYBIT_DEMO_API_SECRET`
 
 For Bybit testnet clients, you can set:
+
 - `BYBIT_TESTNET_API_KEY`
 - `BYBIT_TESTNET_API_SECRET`
+
+:::tip
+We recommend using environment variables to manage your credentials.
+:::
 
 When starting the trading node, you'll receive immediate confirmation of whether your
 credentials are valid and have trading permissions.

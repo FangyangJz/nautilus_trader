@@ -20,6 +20,8 @@ from nautilus_trader.core.rust.model cimport PriceType
 from nautilus_trader.model.book cimport OrderBook
 from nautilus_trader.model.data cimport Bar
 from nautilus_trader.model.data cimport BarType
+from nautilus_trader.model.data cimport IndexPriceUpdate
+from nautilus_trader.model.data cimport MarkPriceUpdate
 from nautilus_trader.model.data cimport QuoteTick
 from nautilus_trader.model.data cimport TradeTick
 from nautilus_trader.model.identifiers cimport AccountId
@@ -53,28 +55,57 @@ cdef class CacheFacade:
 
     cpdef list quote_ticks(self, InstrumentId instrument_id)
     cpdef list trade_ticks(self, InstrumentId instrument_id)
+    cpdef list mark_prices(self, InstrumentId instrument_id)
+    cpdef list index_prices(self, InstrumentId instrument_id)
     cpdef list bars(self, BarType bar_type)
     cpdef Price price(self, InstrumentId instrument_id, PriceType price_type)
+    cpdef dict[InstrumentId, Price] prices(self, PriceType price_type)
     cpdef OrderBook order_book(self, InstrumentId instrument_id)
+    cpdef object own_order_book(self, InstrumentId instrument_id)
+    cpdef dict[Decimal, list[Order]] own_bid_orders(self, InstrumentId instrument_id, set[OrderStatus] status=*)
+    cpdef dict[Decimal, list[Order]] own_ask_orders(self, InstrumentId instrument_id, set[OrderStatus] status=*)
     cpdef QuoteTick quote_tick(self, InstrumentId instrument_id, int index=*)
     cpdef TradeTick trade_tick(self, InstrumentId instrument_id, int index=*)
+    cpdef MarkPriceUpdate mark_price(self, InstrumentId instrument_id, int index=*)
+    cpdef IndexPriceUpdate index_price(self, InstrumentId instrument_id, int index=*)
     cpdef Bar bar(self, BarType bar_type, int index=*)
     cpdef int book_update_count(self, InstrumentId instrument_id)
     cpdef int quote_tick_count(self, InstrumentId instrument_id)
     cpdef int trade_tick_count(self, InstrumentId instrument_id)
+    cpdef int mark_price_count(self, InstrumentId instrument_id)
+    cpdef int index_price_count(self, InstrumentId instrument_id)
     cpdef int bar_count(self, BarType bar_type)
     cpdef bint has_order_book(self, InstrumentId instrument_id)
     cpdef bint has_quote_ticks(self, InstrumentId instrument_id)
     cpdef bint has_trade_ticks(self, InstrumentId instrument_id)
+    cpdef bint has_mark_prices(self, InstrumentId instrument_id)
+    cpdef bint has_index_prices(self, InstrumentId instrument_id)
     cpdef bint has_bars(self, BarType bar_type)
 
-    cpdef double get_xrate(
+    cpdef get_xrate(
         self,
         Venue venue,
         Currency from_currency,
         Currency to_currency,
         PriceType price_type=*,
     )
+    cpdef get_mark_xrate(
+        self,
+        Currency from_currency,
+        Currency to_currency,
+    )
+    cpdef void set_mark_xrate(
+        self,
+        Currency from_currency,
+        Currency to_currency,
+        double xrate,
+    )
+    cpdef void clear_mark_xrate(
+        self,
+        Currency from_currency,
+        Currency to_currency,
+    )
+    cpdef void clear_mark_xrates(self)
 
 # -- INSTRUMENT QUERIES ---------------------------------------------------------------------------
 
@@ -172,6 +203,6 @@ cdef class CacheFacade:
 # -- GREEKS QUERIES ---------------------------------------------------------------------------
 
     cpdef void add_greeks(self, object greeks)
-    cpdef void add_interest_rate_curve(self, object interest_rate_curve)
+    cpdef void add_yield_curve(self, object yield_curve)
     cpdef object greeks(self, InstrumentId instrument_id)
-    cpdef object interest_rate_curve(self, str currency)
+    cpdef object yield_curve(self, str curve_name)

@@ -337,7 +337,7 @@ class OKXWebsocketClient:
             return
 
         self._log.warning(f"Trying to reconnect to {self._base_url}")
-        self._loop.create_task(self._reconnect_wrapper())  # type: ignore
+        self._loop.create_task(self._reconnect_wrapper())
 
     async def _reconnect_wrapper(self):
         if self._check_pong_age_task:
@@ -371,7 +371,7 @@ class OKXWebsocketClient:
         self._is_running = False
 
         if self._client is None:
-            self._log.warning("Cannot disconnect: not connected.")
+            self._log.warning("Cannot disconnect: not connected")
             return
 
         await self._client.disconnect()
@@ -1004,7 +1004,7 @@ class OKXWebsocketClient:
 
         timestamp = int(self._clock.timestamp())
         message = str(timestamp) + "GET/users/self/verify"
-        digest = hmac_signature(self._api_secret, message).encode()
+        digest = bytes.fromhex(hmac_signature(self._api_secret, message))
         sign = base64.b64encode(digest).decode()
         payload = {
             "op": "login",

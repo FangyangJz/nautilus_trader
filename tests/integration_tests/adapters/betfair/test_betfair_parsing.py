@@ -194,6 +194,7 @@ class TestBetfairParsingStreaming:
                 "InstrumentStatus": 7,
                 "OrderBookDeltas": 7,
                 "BettingInstrument": 7,
+                "CustomData": 1,
             },
         )
         assert counts == expected
@@ -238,10 +239,10 @@ class TestBetfairParsingStreaming:
     @pytest.mark.parametrize(
         ("filename", "num_msgs"),
         [
-            ("1-166564490.bz2", 2506),
-            ("1-166811431.bz2", 17852),
-            ("1-180305278.bz2", 15165),
-            ("1-206064380.bz2", 52111),
+            ("1-166564490.bz2", 4114),
+            ("1-166811431.bz2", 29209),
+            ("1-180305278.bz2", 22850),
+            ("1-206064380.bz2", 70904),
         ],
     )
     def test_parsing_streaming_file(self, filename, num_msgs):
@@ -266,6 +267,7 @@ class TestBetfairParsingStreaming:
                 "OrderBookDeltas": 40525,
                 "BetfairTicker": 4658,
                 "TradeTick": 3487,
+                "BetfairSequenceCompleted": 18793,
                 "BettingInstrument": 260,
                 "BSPOrderBookDelta": 2824,
                 "InstrumentStatus": 260,
@@ -302,7 +304,7 @@ class TestBetfairParsingStreaming:
                     books[instrument_id] = create_betfair_order_book(instrument.id)
                 books[instrument_id].apply(update)
                 books[instrument_id].check_integrity()
-        result = [book.count for book in books.values()]
+        result = [book.update_count for book in books.values()]
         assert result == book_count
 
     def test_betfair_trade_sizes(self) -> None:  # noqa: C901
@@ -495,11 +497,12 @@ class TestBetfairParsing:
         )
         mcm = msgspec.json.decode(raw, type=MCM)
         updates = self.parser.parse(mcm)
-        assert len(updates) == 3
-        trade, ticker, deltas = updates
+        assert len(updates) == 4
+        trade, ticker, deltas, completed = updates
         assert isinstance(trade, TradeTick)
         assert isinstance(ticker, Data)
         assert isinstance(deltas, OrderBookDeltas)
+        assert isinstance(completed, CustomData)
         assert len(deltas.deltas) == 2
 
     def test_make_order_limit(self):

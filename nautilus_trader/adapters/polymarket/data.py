@@ -18,7 +18,6 @@ from collections.abc import Coroutine
 from typing import Any
 
 import msgspec
-import pandas as pd
 from py_clob_client.client import ClobClient
 
 from nautilus_trader.adapters.polymarket.common.constants import POLYMARKET_VENUE
@@ -39,16 +38,27 @@ from nautilus_trader.cache.cache import Cache
 from nautilus_trader.common.component import LiveClock
 from nautilus_trader.common.component import MessageBus
 from nautilus_trader.common.enums import LogColor
-from nautilus_trader.core.uuid import UUID4
+from nautilus_trader.core.datetime import millis_to_nanos
+from nautilus_trader.data.messages import RequestBars
+from nautilus_trader.data.messages import RequestInstrument
+from nautilus_trader.data.messages import RequestInstruments
+from nautilus_trader.data.messages import RequestQuoteTicks
+from nautilus_trader.data.messages import RequestTradeTicks
+from nautilus_trader.data.messages import SubscribeBars
+from nautilus_trader.data.messages import SubscribeOrderBook
+from nautilus_trader.data.messages import SubscribeQuoteTicks
+from nautilus_trader.data.messages import SubscribeTradeTicks
+from nautilus_trader.data.messages import UnsubscribeBars
+from nautilus_trader.data.messages import UnsubscribeOrderBook
+from nautilus_trader.data.messages import UnsubscribeQuoteTicks
+from nautilus_trader.data.messages import UnsubscribeTradeTicks
 from nautilus_trader.live.data_client import LiveMarketDataClient
 from nautilus_trader.model.book import OrderBook
-from nautilus_trader.model.data import BarType
 from nautilus_trader.model.data import OrderBookDeltas
 from nautilus_trader.model.data import QuoteTick
 from nautilus_trader.model.enums import BookType
 from nautilus_trader.model.identifiers import ClientId
 from nautilus_trader.model.identifiers import InstrumentId
-from nautilus_trader.model.identifiers import Venue
 from nautilus_trader.model.instruments import BinaryOption
 
 
@@ -100,6 +110,8 @@ class PolymarketDataClient(LiveMarketDataClient):
 
         # Configuration
         self._config = config
+        self._log.info(f"{config.signature_type=}", LogColor.BLUE)
+        self._log.info(f"{config.funder=}", LogColor.BLUE)
         self._log.info(f"{config.ws_connection_initial_delay_secs=}", LogColor.BLUE)
         self._log.info(f"{config.ws_connection_delay_secs=}", LogColor.BLUE)
         self._log.info(f"{config.update_instruments_interval_mins=}", LogColor.BLUE)
@@ -109,14 +121,12 @@ class PolymarketDataClient(LiveMarketDataClient):
         self._http_client = http_client
 
         # WebSocket API
-        self._ws_base_url = self._config.base_url_ws
         self._ws_clients: list[PolymarketWebSocketClient] = []
         self._ws_client_pending_connection: PolymarketWebSocketClient | None = None
 
         self._decoder_market_msg = msgspec.json.Decoder(MARKET_WS_MESSAGE)
 
         # Tasks
-        self._update_instruments_interval_mins: int | None = config.update_instruments_interval_mins
         self._update_instruments_task: asyncio.Task | None = None
         self._delayed_ws_client_connection_task: asyncio.Task | None = None
 
@@ -129,9 +139,9 @@ class PolymarketDataClient(LiveMarketDataClient):
         await self._instrument_provider.initialize()
         self._send_all_instruments_to_data_engine()
 
-        if self._update_instruments_interval_mins:
+        if self._config.update_instruments_interval_mins:
             self._update_instruments_task = self.create_task(
-                self._update_instruments(self._update_instruments_interval_mins),
+                self._update_instruments(self._config.update_instruments_interval_mins),
             )
 
     async def _disconnect(self) -> None:
@@ -159,12 +169,17 @@ class PolymarketDataClient(LiveMarketDataClient):
         self._log.info("Creating new PolymarketWebSocketClient", LogColor.MAGENTA)
         return PolymarketWebSocketClient(
             self._clock,
-            base_url=self._ws_base_url,
+            base_url=self._config.base_url_ws,
             channel=PolymarketWebSocketChannel.MARKET,
             handler=self._handle_ws_message,
             handler_reconnect=None,
             loop=self._loop,
         )
+
+    def _create_local_book(self, instrument_id: InstrumentId) -> OrderBook:
+        local_book = OrderBook(instrument_id, book_type=BookType.L2_MBP)
+        self._local_books[instrument_id] = local_book
+        return local_book
 
     def _send_all_instruments_to_data_engine(self) -> None:
         for instrument in self._instrument_provider.get_all().values():
@@ -188,7 +203,7 @@ class PolymarketDataClient(LiveMarketDataClient):
     async def _delayed_ws_client_connection(
         self,
         ws_client: PolymarketWebSocketClient,
-        sleep_secs: int,
+        sleep_secs: float,
     ) -> None:
         try:
             await asyncio.sleep(sleep_secs)
@@ -205,6 +220,9 @@ class PolymarketDataClient(LiveMarketDataClient):
             create_connect_task = True
 
         token_id = get_polymarket_token_id(instrument_id)
+        if token_id in self._ws_client_pending_connection.asset_subscriptions():
+            return  # Already subscribed
+
         self._ws_client_pending_connection.subscribe_book(token_id)
 
         if create_connect_task:
@@ -221,14 +239,8 @@ class PolymarketDataClient(LiveMarketDataClient):
                 success_msg="Finished delaying start of PolymarketWebSocketClient connection",
             )
 
-    async def _subscribe_order_book_deltas(
-        self,
-        instrument_id: InstrumentId,
-        book_type: BookType,
-        depth: int | None = None,
-        params: dict[str, Any] | None = None,
-    ) -> None:
-        if book_type == BookType.L3_MBO:
+    async def _subscribe_order_book_deltas(self, command: SubscribeOrderBook) -> None:
+        if command.book_type == BookType.L3_MBO:
             self._log.error(
                 "Cannot subscribe to order book deltas: "
                 "L3_MBO data is not published by Polymarket. "
@@ -236,162 +248,99 @@ class PolymarketDataClient(LiveMarketDataClient):
             )
             return
 
-        if self._config.compute_effective_deltas:
-            local_book = OrderBook(instrument_id, book_type=BookType.L2_MBP)
-            self._local_books[instrument_id] = local_book
+        if command.instrument_id not in self._local_books:
+            self._create_local_book(command.instrument_id)
 
-        await self._subscribe_asset_book(instrument_id)
+        await self._subscribe_asset_book(command.instrument_id)
 
-    async def _subscribe_quote_ticks(
-        self,
-        instrument_id: InstrumentId,
-        params: dict[str, Any] | None = None,
-    ) -> None:
-        await self._subscribe_asset_book(instrument_id)
+    async def _subscribe_quote_ticks(self, command: SubscribeQuoteTicks) -> None:
+        if command.instrument_id not in self._local_books:
+            self._create_local_book(command.instrument_id)
 
-    async def _subscribe_trade_ticks(
-        self,
-        instrument_id: InstrumentId,
-        params: dict[str, Any] | None = None,
-    ) -> None:
-        await self._subscribe_asset_book(instrument_id)
+        await self._subscribe_asset_book(command.instrument_id)
 
-    async def _subscribe_bars(
-        self,
-        bar_type: BarType,
-        params: dict[str, Any] | None = None,
-    ) -> None:
+    async def _subscribe_trade_ticks(self, command: SubscribeTradeTicks) -> None:
+        await self._subscribe_asset_book(command.instrument_id)
+
+    async def _subscribe_bars(self, command: SubscribeBars) -> None:
         self._log.error(
-            f"Cannot subscribe to {bar_type} bars: not implemented for Polymarket",
+            f"Cannot subscribe to {command.bar_type} bars: not implemented for Polymarket",
         )
 
-    async def _unsubscribe_order_book_deltas(
-        self,
-        instrument_id: InstrumentId,
-        params: dict[str, Any] | None = None,
-    ) -> None:
+    async def _unsubscribe_order_book_deltas(self, command: UnsubscribeOrderBook) -> None:
         self._log.error(
-            f"Cannot unsubscribe from {instrument_id} order book deltas: unsubscribing not supported by Polymarket",
+            f"Cannot unsubscribe from {command.instrument_id} order book deltas: unsubscribing not supported by Polymarket",
         )
 
-    async def _unsubscribe_order_book_snapshots(
-        self,
-        instrument_id: InstrumentId,
-        params: dict[str, Any] | None = None,
-    ) -> None:
+    async def _unsubscribe_order_book_snapshots(self, command: UnsubscribeOrderBook) -> None:
         self._log.error(
-            f"Cannot unsubscribe from {instrument_id} order book snapshots: unsubscribing not supported by Polymarket",
+            f"Cannot unsubscribe from {command.instrument_id} order book snapshots: unsubscribing not supported by Polymarket",
         )
 
-    async def _unsubscribe_quote_ticks(
-        self,
-        instrument_id: InstrumentId,
-        params: dict[str, Any] | None = None,
-    ) -> None:
+    async def _unsubscribe_quote_ticks(self, command: UnsubscribeQuoteTicks) -> None:
         self._log.error(
-            f"Cannot unsubscribe from {instrument_id} quotes: unsubscribing not supported by Polymarket",
+            f"Cannot unsubscribe from {command.instrument_id} quotes: unsubscribing not supported by Polymarket",
         )
 
-    async def _unsubscribe_trade_ticks(
-        self,
-        instrument_id: InstrumentId,
-        params: dict[str, Any] | None = None,
-    ) -> None:
+    async def _unsubscribe_trade_ticks(self, command: UnsubscribeTradeTicks) -> None:
         self._log.error(
-            f"Cannot unsubscribe from {instrument_id} trades: unsubscribing not supported by Polymarket",
+            f"Cannot unsubscribe from {command.instrument_id} trades: unsubscribing not supported by Polymarket",
         )
 
-    async def _unsubscribe_bars(
-        self,
-        bar_type: BarType,
-        params: dict[str, Any] | None = None,
-    ) -> None:
+    async def _unsubscribe_bars(self, command: UnsubscribeBars) -> None:
         self._log.error(
-            f"Cannot unsubscribe from {bar_type} bars: not implemented for Polymarket",
+            f"Cannot unsubscribe from {command.bar_type} bars: not implemented for Polymarket",
         )
 
-    async def _request_instrument(
-        self,
-        instrument_id: InstrumentId,
-        correlation_id: UUID4,
-        start: pd.Timestamp | None = None,
-        end: pd.Timestamp | None = None,
-        params: dict[str, Any] | None = None,
-    ) -> None:
-        if start is not None:
+    async def _request_instrument(self, request: RequestInstrument) -> None:
+        if request.start is not None:
             self._log.warning(
-                f"Requesting instrument {instrument_id} with specified `start` which has no effect",
+                f"Requesting instrument {request.instrument_id} with specified `start` which has no effect",
             )
 
-        if end is not None:
+        if request.end is not None:
             self._log.warning(
-                f"Requesting instrument {instrument_id} with specified `end` which has no effect",
+                f"Requesting instrument {request.instrument_id} with specified `end` which has no effect",
             )
 
-        instrument: BinaryOption | None = self._instrument_provider.find(instrument_id)
+        instrument: BinaryOption | None = self._instrument_provider.find(request.instrument_id)
         if instrument is None:
-            self._log.error(f"Cannot find instrument for {instrument_id}")
+            self._log.error(f"Cannot find instrument for {request.instrument_id}")
             return
 
-        self._handle_instrument(instrument, correlation_id, params)
+        self._handle_instrument(instrument, request.id, request.params)
 
-    async def _request_instruments(
-        self,
-        venue: Venue,
-        correlation_id: UUID4,
-        start: pd.Timestamp | None = None,
-        end: pd.Timestamp | None = None,
-        params: dict[str, Any] | None = None,
-    ) -> None:
-        if start is not None:
+    async def _request_instruments(self, request: RequestInstruments) -> None:
+        if request.start is not None:
             self._log.warning(
-                f"Requesting instruments for {venue} with specified `start` which has no effect",
+                f"Requesting instruments for {request.venue} with specified `start` which has no effect",
             )
 
-        if end is not None:
+        if request.end is not None:
             self._log.warning(
-                f"Requesting instruments for {venue} with specified `end` which has no effect",
+                f"Requesting instruments for {request.venue} with specified `end` which has no effect",
             )
 
         all_instruments = self._instrument_provider.get_all()
         target_instruments = []
         for instrument in all_instruments.values():
-            if instrument.venue == venue:
+            if instrument.venue == request.venue:
                 target_instruments.append(instrument)
 
-        self._handle_instruments(target_instruments, venue, correlation_id, params)
+        self._handle_instruments(
+            target_instruments,
+            request.venue,
+            request.id,
+            request.params,
+        )
 
-    async def _request_quote_ticks(
-        self,
-        instrument_id: InstrumentId,
-        limit: int,
-        correlation_id: UUID4,
-        start: pd.Timestamp | None = None,
-        end: pd.Timestamp | None = None,
-        params: dict[str, Any] | None = None,
-    ) -> None:
+    async def _request_quote_ticks(self, request: RequestQuoteTicks) -> None:
         self._log.error("Cannot request historical quotes: not published by Polymarket")
 
-    async def _request_trade_ticks(
-        self,
-        instrument_id: InstrumentId,
-        limit: int,
-        correlation_id: UUID4,
-        start: pd.Timestamp | None = None,
-        end: pd.Timestamp | None = None,
-        params: dict[str, Any] | None = None,
-    ) -> None:
+    async def _request_trade_ticks(self, request: RequestTradeTicks) -> None:
         self._log.error("Cannot request historical trades: not published by Polymarket")
 
-    async def _request_bars(
-        self,
-        bar_type: BarType,
-        limit: int,
-        correlation_id: UUID4,
-        start: pd.Timestamp | None = None,
-        end: pd.Timestamp | None = None,
-        params: dict[str, Any] | None = None,
-    ) -> None:
+    async def _request_bars(self, request: RequestBars) -> None:
         self._log.error("Cannot request historical bars: not published by Polymarket")
 
     def _handle_ws_message(self, raw: bytes) -> None:  # noqa: C901 (too complex)
@@ -426,7 +375,7 @@ class PolymarketDataClient(LiveMarketDataClient):
                     else:
                         self._log.error(f"Unknown websocket message topic: {ws_message}")
         except Exception as e:
-            self._log.error(f"Failed to parse websocket message: {raw.decode()} with error {e}")
+            self._log.exception(f"Failed to parse websocket message: {raw.decode()} with error", e)
 
     def _handle_book_snapshot(
         self,
@@ -439,7 +388,7 @@ class PolymarketDataClient(LiveMarketDataClient):
         self._handle_deltas(instrument, deltas)
 
         if instrument.id in self.subscribed_quote_ticks():
-            quote = ws_message.parse_to_quote_tick(instrument=instrument, ts_init=now_ns)
+            quote = ws_message.parse_to_quote(instrument=instrument, ts_init=now_ns)
             self._last_quotes[instrument.id] = quote
             self._handle_data(quote)
 
@@ -470,35 +419,35 @@ class PolymarketDataClient(LiveMarketDataClient):
         now_ns = self._clock.timestamp_ns()
         deltas = ws_message.parse_to_deltas(instrument=instrument, ts_init=now_ns)
 
-        if self._config.compute_effective_deltas:
-            local_book = self._local_books.get(instrument.id)
-            if local_book:
-                local_book.apply_deltas(deltas)
+        local_book = self._local_books[instrument.id]
+        local_book.apply(deltas)
 
         self._handle_data(deltas)
 
         if instrument.id in self.subscribed_quote_ticks():
-            last_quote = self._last_quotes.get(instrument.id)
-            if last_quote is None:
-                return
-
-            # Check if top-of-book change
-            quotes = ws_message.parse_to_quote_ticks(
-                instrument=instrument,
-                last_quote=last_quote,
+            quote = QuoteTick(
+                instrument_id=instrument.id,
+                bid_price=local_book.best_bid_price(),
+                ask_price=local_book.best_ask_price(),
+                bid_size=local_book.best_bid_size(),
+                ask_size=local_book.best_ask_size(),
+                ts_event=millis_to_nanos(float(ws_message.timestamp)),
                 ts_init=self._clock.timestamp_ns(),
             )
-            for quote in quotes:
+
+            last_quote = self._last_quotes.get(instrument.id)
+
+            if last_quote is not None:
                 if (
                     quote.bid_price == last_quote.bid_price
                     and quote.ask_price == last_quote.ask_price
                     and quote.bid_size == last_quote.bid_size
                     and quote.ask_size == last_quote.ask_size
                 ):
-                    continue  # No top-of-book change
+                    return  # No top-of-book change
 
-                self._last_quotes[instrument.id] = quote
-                self._handle_data(quote)
+            self._last_quotes[instrument.id] = quote
+            self._handle_data(quote)
 
     def _handle_trade(
         self,

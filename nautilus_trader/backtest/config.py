@@ -18,17 +18,23 @@ from __future__ import annotations
 import sys
 from typing import Any
 
+import msgspec
 import pandas as pd
 
 from nautilus_trader.common import Environment
 from nautilus_trader.common.config import ActorConfig
 from nautilus_trader.common.config import ImportableActorConfig
 from nautilus_trader.common.config import NautilusConfig
+from nautilus_trader.common.config import NonNegativeInt
+from nautilus_trader.common.config import msgspec_encoding_hook
+from nautilus_trader.common.config import resolve_config_path
 from nautilus_trader.common.config import resolve_path
+from nautilus_trader.core.correctness import PyCondition
 from nautilus_trader.core.datetime import dt_to_unix_nanos
 from nautilus_trader.data.config import DataEngineConfig
 from nautilus_trader.execution.config import ExecEngineConfig
 from nautilus_trader.model.data import Bar
+from nautilus_trader.model.data import BarType
 from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.identifiers import TraderId
 from nautilus_trader.risk.config import RiskEngineConfig
@@ -58,9 +64,11 @@ def parse_filters_expr(s: str | None):
     def safer_eval(input_string):
         allowed_names = {"field": field}
         code = compile(input_string, "<string>", "eval")
+
         for name in code.co_names:
             if name not in allowed_names:
                 raise NameError(f"Use of {name} not allowed")
+
         return eval(code, {}, allowed_names)  # noqa
 
     return safer_eval(s)  # Only allow use of the field object
@@ -79,9 +87,9 @@ class BacktestVenueConfig(NautilusConfig, frozen=True):
         generate new position IDs.
     account_type : str
         The account type for the exchange.
-    starting_balances : list[str]
+    starting_balances : list[Money | str]
         The starting account balances (specify one for a single asset account).
-    base_currency : Currency, optional
+    base_currency : Currency | str, optional
         The account base currency for the exchange. Use ``None`` for multi-currency accounts.
     default_leverage : float, optional
         The account default leverage (for margin accounts).
@@ -117,6 +125,14 @@ class BacktestVenueConfig(NautilusConfig, frozen=True):
         - If Low is closer to Open than High then the processing order is Open, Low, High, Close.
     trade_execution : bool, default False
         If trades should be processed by the matching engine(s) (and move the market).
+    modules : list[ImportableActorConfig], optional
+        The simulation modules for the venue.
+    fill_model : ImportableFillModelConfig, optional
+        The fill model for the venue.
+    latency_model : ImportableLatencyModelConfig, optional
+        The latency model for the venue.
+    fee_model : ImportableFeeModelConfig, optional
+        The fee model for the venue.
 
     """
 
@@ -139,8 +155,10 @@ class BacktestVenueConfig(NautilusConfig, frozen=True):
     bar_execution: bool = True
     bar_adaptive_high_low_ordering: bool = False
     trade_execution: bool = False
-    # fill_model: FillModel | None = None  # TODO: Implement
     modules: list[ImportableActorConfig] | None = None
+    fill_model: ImportableFillModelConfig | None = None
+    latency_model: ImportableLatencyModelConfig | None = None
+    fee_model: ImportableFeeModelConfig | None = None
 
 
 class BacktestDataConfig(NautilusConfig, frozen=True):
@@ -157,7 +175,7 @@ class BacktestDataConfig(NautilusConfig, frozen=True):
         The `fsspec` filesystem protocol for the catalog.
     catalog_fs_storage_options : dict, optional
         The `fsspec` storage options.
-    instrument_id : InstrumentId, optional
+    instrument_id : InstrumentId | str, optional
         The instrument ID for the data configuration.
     start_time : str or int, optional
         The start time for the data configuration.
@@ -171,8 +189,15 @@ class BacktestDataConfig(NautilusConfig, frozen=True):
         The client ID for the data configuration.
     metadata : dict, optional
         The metadata for the data catalog query.
-    bar_spec : str, optional
+    bar_spec : BarSpecification | str, optional
         The bar specification for the data catalog query.
+    instrument_ids : list[InstrumentId | str], optional
+        The instrument IDs for the data catalog query.
+        Can be used if instrument_id is not specified.
+        If bar_spec is specified an equivalent list of bar_types will be constructed.
+    bar_types : list[BarType | str], optional
+        The bar types for the data catalog query.
+        Can be used if instrument_id is not specified.
 
     """
 
@@ -187,6 +212,8 @@ class BacktestDataConfig(NautilusConfig, frozen=True):
     client_id: str | None = None
     metadata: dict | None = None
     bar_spec: str | None = None
+    instrument_ids: list[str] | None = None
+    bar_types: list[str] | None = None
 
     @property
     def data_type(self) -> type:
@@ -204,7 +231,7 @@ class BacktestDataConfig(NautilusConfig, frozen=True):
             return self.data_cls
 
     @property
-    def query(self) -> dict[str, Any]:
+    def query(self) -> dict[str, Any]:  # noqa: C901
         """
         Return a catalog query object for the configuration.
 
@@ -213,15 +240,48 @@ class BacktestDataConfig(NautilusConfig, frozen=True):
         dict[str, Any]
 
         """
-        if self.data_cls is Bar and self.bar_spec:
-            bar_type = f"{self.instrument_id}-{self.bar_spec}-EXTERNAL"
-            filter_expr: str | None = f'field("bar_type") == "{bar_type}"'
+        filter_expr: str | None = None
+
+        if self.data_cls is Bar:
+            used_bar_types = []
+
+            if self.bar_types is None and self.instrument_ids is None:
+                assert self.instrument_id, "No `instrument_id` for Bar data config"
+                assert self.bar_spec, "No `bar_spec` for Bar data config"
+
+            if self.instrument_id is not None and self.bar_spec is not None:
+                bar_type = f"{self.instrument_id}-{self.bar_spec}-EXTERNAL"
+                used_bar_types = [bar_type]
+            elif self.bar_types is not None:
+                used_bar_types = self.bar_types
+            elif self.instrument_ids is not None and self.bar_spec is not None:
+                for instrument_id in self.instrument_ids:
+                    used_bar_types.append(f"{instrument_id}-{self.bar_spec}-EXTERNAL")
+
+            if len(used_bar_types) > 0:
+                filter_expr = f'(field("bar_type") == "{used_bar_types[0]}")'
+
+            for bar_type in used_bar_types[1:]:
+                filter_expr = f'{filter_expr} | (field("bar_type") == "{bar_type}")'
         else:
             filter_expr = self.filter_expr
 
+        used_instrument_ids = None
+
+        if self.instrument_id is not None:
+            used_instrument_ids = [self.instrument_id]
+        elif self.instrument_ids is not None:
+            used_instrument_ids = self.instrument_ids
+        elif self.bar_types is not None:
+            bar_types: list[BarType] = [
+                BarType.from_str(bar_type) if type(bar_type) is str else bar_type
+                for bar_type in self.bar_types
+            ]
+            used_instrument_ids = [bar_type.instrument_id for bar_type in bar_types]
+
         return {
             "data_cls": self.data_type,
-            "instrument_ids": [self.instrument_id] if self.instrument_id else None,
+            "instrument_ids": used_instrument_ids,
             "start": self.start_time,
             "end": self.end_time,
             "filter_expr": parse_filters_expr(filter_expr),
@@ -242,6 +302,7 @@ class BacktestDataConfig(NautilusConfig, frozen=True):
         """
         if self.start_time is None:
             return 0
+
         return dt_to_unix_nanos(self.start_time)
 
     @property
@@ -258,6 +319,7 @@ class BacktestDataConfig(NautilusConfig, frozen=True):
         """
         if self.end_time is None:
             return sys.maxsize
+
         return dt_to_unix_nanos(self.end_time)
 
 
@@ -303,11 +365,15 @@ class BacktestEngineConfig(NautilusKernelConfig, frozen=True):
     """
 
     environment: Environment = Environment.BACKTEST
-    trader_id: TraderId = TraderId("BACKTESTER-001")
+    trader_id: TraderId = "BACKTESTER-001"
     data_engine: DataEngineConfig = DataEngineConfig()
     risk_engine: RiskEngineConfig = RiskEngineConfig()
     exec_engine: ExecEngineConfig = ExecEngineConfig()
     run_analysis: bool = True
+
+    def __post_init__(self):
+        if isinstance(self.trader_id, str):
+            msgspec.structs.force_setattr(self, "trader_id", TraderId(self.trader_id))
 
 
 class BacktestRunConfig(NautilusConfig, frozen=True):
@@ -328,6 +394,8 @@ class BacktestRunConfig(NautilusConfig, frozen=True):
     chunk_size : int, optional
         The number of data points to process in each chunk during streaming mode.
         If `None`, the backtest will run without streaming, loading all data at once.
+    raise_exception : bool, default False
+        If exceptions during an engine build or run should be raised to interrupt the nodes process.
     dispose_on_completion : bool, default True
         If the backtest engine should be disposed on completion of the run.
         If True, then will drop data and all state.
@@ -351,6 +419,7 @@ class BacktestRunConfig(NautilusConfig, frozen=True):
     data: list[BacktestDataConfig]
     engine: BacktestEngineConfig | None = None
     chunk_size: int | None = None
+    raise_exception: bool = False
     dispose_on_completion: bool = True
     start: str | int | None = None
     end: str | int | None = None
@@ -360,6 +429,257 @@ class SimulationModuleConfig(ActorConfig, frozen=True):
     """
     Configuration for ``SimulationModule`` instances.
     """
+
+
+class FillModelConfig(NautilusConfig, frozen=True):
+    """
+    Configuration for ``FillModel`` instances.
+
+    Parameters
+    ----------
+    prob_fill_on_limit : float, default 1.0
+        The probability of limit order filling if the market rests on its price.
+    prob_fill_on_stop : float, default 1.0
+        The probability of stop orders filling if the market rests on its price.
+    prob_slippage : float, default 0.0
+        The probability of order fill prices slipping by one tick.
+    random_seed : int, optional
+        The random seed (if None then no random seed).
+
+    """
+
+    prob_fill_on_limit: float = 1.0
+    prob_fill_on_stop: float = 1.0
+    prob_slippage: float = 0.0
+    random_seed: int | None = None
+
+
+class ImportableFillModelConfig(NautilusConfig, frozen=True):
+    """
+    Configuration for a fill model instance.
+
+    Parameters
+    ----------
+    fill_model_path : str
+        The fully qualified name of the fill model class.
+    config_path : str
+        The fully qualified name of the config class.
+    config : dict[str, Any]
+        The fill model configuration.
+
+    """
+
+    fill_model_path: str
+    config_path: str
+    config: dict[str, Any]
+
+
+class FillModelFactory:
+    """
+    Provides fill model creation from importable configurations.
+    """
+
+    @staticmethod
+    def create(config: ImportableFillModelConfig):
+        """
+        Create a fill model from the given configuration.
+
+        Parameters
+        ----------
+        config : ImportableFillModelConfig
+            The configuration for the building step.
+
+        Returns
+        -------
+        FillModel
+
+        Raises
+        ------
+        TypeError
+            If `config` is not of type `ImportableFillModelConfig`.
+
+        """
+        PyCondition.type(config, ImportableFillModelConfig, "config")
+        fill_model_cls = resolve_path(config.fill_model_path)
+        config_cls = resolve_config_path(config.config_path)
+        json = msgspec.json.encode(config.config, enc_hook=msgspec_encoding_hook)
+        config_obj = config_cls.parse(json)
+        return fill_model_cls(config=config_obj)
+
+
+class LatencyModelConfig(NautilusConfig, frozen=True):
+    """
+    Configuration for ``LatencyModel`` instances.
+
+    Parameters
+    ----------
+    base_latency_nanos : int, default 1_000_000_000
+        The base latency (nanoseconds) for the model.
+    insert_latency_nanos : int, default 0
+        The order insert latency (nanoseconds) for the model.
+    update_latency_nanos : int, default 0
+        The order update latency (nanoseconds) for the model.
+    cancel_latency_nanos : int, default 0
+        The order cancel latency (nanoseconds) for the model.
+
+    """
+
+    base_latency_nanos: NonNegativeInt = 1_000_000_000  # 1 millisecond in nanoseconds
+    insert_latency_nanos: NonNegativeInt = 0
+    update_latency_nanos: NonNegativeInt = 0
+    cancel_latency_nanos: NonNegativeInt = 0
+
+
+class ImportableLatencyModelConfig(NautilusConfig, frozen=True):
+    """
+    Configuration for a latency model instance.
+
+    Parameters
+    ----------
+    latency_model_path : str
+        The fully qualified name of the latency model class.
+    config_path : str
+        The fully qualified name of the config class.
+    config : dict[str, Any]
+        The latency model configuration.
+
+    """
+
+    latency_model_path: str
+    config_path: str
+    config: dict[str, Any]
+
+
+class LatencyModelFactory:
+    """
+    Provides latency model creation from importable configurations.
+    """
+
+    @staticmethod
+    def create(config: ImportableLatencyModelConfig):
+        """
+        Create a latency model from the given configuration.
+
+        Parameters
+        ----------
+        config : ImportableLatencyModelConfig
+            The configuration for the building step.
+
+        Returns
+        -------
+        LatencyModel
+
+        Raises
+        ------
+        TypeError
+            If `config` is not of type `ImportableLatencyModelConfig`.
+
+        """
+        PyCondition.type(config, ImportableLatencyModelConfig, "config")
+        latency_model_cls = resolve_path(config.latency_model_path)
+        config_cls = resolve_config_path(config.config_path)
+        json = msgspec.json.encode(config.config, enc_hook=msgspec_encoding_hook)
+        config_obj = config_cls.parse(json)
+        return latency_model_cls(config=config_obj)
+
+
+class FeeModelConfig(NautilusConfig, frozen=True):
+    """
+    Base configuration for ``FeeModel`` instances.
+    """
+
+
+class MakerTakerFeeModelConfig(FeeModelConfig, frozen=True):
+    """
+    Configuration for ``MakerTakerFeeModel`` instances.
+
+    This fee model uses the maker/taker fees defined on the instrument.
+
+    """
+
+
+class FixedFeeModelConfig(FeeModelConfig, frozen=True):
+    """
+    Configuration for ``FixedFeeModel`` instances.
+
+    Parameters
+    ----------
+    commission : Money | str
+        The fixed commission amount for trades.
+    charge_commission_once : bool, default True
+        Whether to charge the commission once per order or per fill.
+
+    """
+
+    commission: str
+    charge_commission_once: bool = True
+
+
+class PerContractFeeModelConfig(FeeModelConfig, frozen=True):
+    """
+    Configuration for ``PerContractFeeModel`` instances.
+
+    Parameters
+    ----------
+    commission : Money | str
+        The commission amount per contract.
+
+    """
+
+    commission: str
+
+
+class ImportableFeeModelConfig(NautilusConfig, frozen=True):
+    """
+    Configuration for a fee model instance.
+
+    Parameters
+    ----------
+    fee_model_path : str
+        The fully qualified name of the fee model class.
+    config_path : str
+        The fully qualified name of the config class.
+    config : dict[str, Any]
+        The fee model configuration.
+
+    """
+
+    fee_model_path: str
+    config_path: str
+    config: dict[str, Any]
+
+
+class FeeModelFactory:
+    """
+    Provides fee model creation from importable configurations.
+    """
+
+    @staticmethod
+    def create(config: ImportableFeeModelConfig):
+        """
+        Create a fee model from the given configuration.
+
+        Parameters
+        ----------
+        config : ImportableFeeModelConfig
+            The configuration for the building step.
+
+        Returns
+        -------
+        FeeModel
+
+        Raises
+        ------
+        TypeError
+            If `config` is not of type `ImportableFeeModelConfig`.
+
+        """
+        PyCondition.type(config, ImportableFeeModelConfig, "config")
+        fee_model_cls = resolve_path(config.fee_model_path)
+        config_cls = resolve_config_path(config.config_path)
+        json = msgspec.json.encode(config.config, enc_hook=msgspec_encoding_hook)
+        config_obj = config_cls.parse(json)
+        return fee_model_cls(config=config_obj)
 
 
 class FXRolloverInterestConfig(SimulationModuleConfig, frozen=True):

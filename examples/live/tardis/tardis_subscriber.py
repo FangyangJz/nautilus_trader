@@ -16,10 +16,10 @@
 
 from typing import Any
 
-from nautilus_trader.adapters.tardis.config import TardisDataClientConfig
-from nautilus_trader.adapters.tardis.constants import TARDIS
-from nautilus_trader.adapters.tardis.constants import TARDIS_CLIENT_ID
-from nautilus_trader.adapters.tardis.factories import TardisLiveDataClientFactory
+from nautilus_trader.adapters.tardis import TARDIS
+from nautilus_trader.adapters.tardis import TARDIS_CLIENT_ID
+from nautilus_trader.adapters.tardis import TardisDataClientConfig
+from nautilus_trader.adapters.tardis import TardisLiveDataClientFactory
 from nautilus_trader.cache.config import CacheConfig
 from nautilus_trader.common.enums import LogColor
 from nautilus_trader.config import InstrumentProviderConfig
@@ -38,22 +38,20 @@ from nautilus_trader.model.identifiers import TraderId
 from nautilus_trader.trading.strategy import Strategy
 
 
-# *** THIS INTEGRATION IS STILL UNDER CONSTRUCTION. ***
-# *** CONSIDER IT TO BE IN AN UNSTABLE BETA PHASE AND EXERCISE CAUTION. ***
-
 # Run the following to start the tardis-machine server:
 # docker run -p 8000:8000 -p 8001:8001 -e "TM_API_KEY=YOUR_API_KEY" -d tardisdev/tardis-machine
 
 instrument_ids = [
     InstrumentId.from_str("BTCUSDT-PERP.BINANCE"),
     InstrumentId.from_str("BTCUSD_PERP.BINANCE_DELIVERY"),
+    # InstrumentId.from_str("USDTUSD.BINANCE_US"),
     # InstrumentId.from_str("BTCUSDT-SPOT.BYBIT"),
     # InstrumentId.from_str("BTCUSDT-LINEAR.BYBIT"),
     # InstrumentId.from_str("BTCUSDT.BINANCE"),
     # InstrumentId.from_str("XBTUSDT.BITMEX"),
     # InstrumentId.from_str("ETHUSDT.BITMEX"),
-    InstrumentId.from_str("BTC_USDT.GATE_IO"),
-    InstrumentId.from_str("BTC_USDT-PERP.GATE_IO"),
+    # InstrumentId.from_str("BTC_USDT.GATE_IO"),
+    # InstrumentId.from_str("BTC_USDT-PERP.GATE_IO"),
 ]
 
 # See supported venues https://nautilustrader.io/docs/nightly/integrations/tardis#venues

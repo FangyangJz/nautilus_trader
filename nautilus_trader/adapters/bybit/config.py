@@ -24,7 +24,10 @@ from nautilus_trader.config import PositiveInt
 
 
 if TYPE_CHECKING:
+    from nautilus_trader.adapters.bybit.common.enums import BybitMarginMode
+    from nautilus_trader.adapters.bybit.common.enums import BybitPositionMode
     from nautilus_trader.adapters.bybit.common.enums import BybitProductType
+    from nautilus_trader.adapters.bybit.common.symbol import BybitSymbol
 
 
 class BybitDataClientConfig(LiveDataClientConfig, frozen=True):
@@ -52,6 +55,9 @@ class BybitDataClientConfig(LiveDataClientConfig, frozen=True):
         The interval (minutes) between reloading instruments from the venue.
     recv_window_ms : PositiveInt, default 5000
         The receive window (milliseconds) for Bybit HTTP requests.
+    bars_timestamp_on_close : bool, default True
+        If the ts_event timestamp for bars should be on the open or close or the bar.
+        If True, then ts_event will be on the close of the bar.
 
     """
 
@@ -63,6 +69,7 @@ class BybitDataClientConfig(LiveDataClientConfig, frozen=True):
     testnet: bool = False
     update_instruments_interval_mins: PositiveInt | None = 60
     recv_window_ms: PositiveInt = 5_000
+    bars_timestamp_on_close: bool = True
 
 
 class BybitExecClientConfig(LiveExecClientConfig, frozen=True):
@@ -104,12 +111,22 @@ class BybitExecClientConfig(LiveExecClientConfig, frozen=True):
         Effective only when `use_ws_trade_api` is set to `True`.
     max_retries : PositiveInt, optional
         The maximum number of times a submit, cancel or modify order request will be retried.
-    retry_delay : PositiveFloat, optional
-        The delay (seconds) between retries. Short delays with frequent retries may result in account bans.
+    retry_delay_initial_ms : PositiveInt, optional
+        The initial delay (milliseconds) between retries. Short delays with frequent retries may result in account bans.
+    retry_delay_max_ms : PositiveInt, optional
+        The maximum delay (milliseconds) between retries.
     recv_window_ms : PositiveInt, default 5000
         The receive window (milliseconds) for Bybit HTTP requests.
-    ws_trade_timeout_secs : float, default 5.0
+    ws_trade_timeout_secs : PositiveFloat, default 5.0
         The timeout for trade websocket messages.
+    ws_auth_timeout_secs : PositiveFloat, default 5.0
+        The timeout for auth websocket messages.
+    futures_leverages : dict[BybitSymbol, PositiveInt], optional
+        The leverages for futures.
+    position_mode : dict[BybitSymbol, BybitPositionMode], optional
+        The position mode for `USDT perpetual` and `Inverse futures`.
+    margin_mode : BybitMarginMode, optional
+        Set Margin Mode.
 
     Warnings
     --------
@@ -130,6 +147,11 @@ class BybitExecClientConfig(LiveExecClientConfig, frozen=True):
     use_ws_trade_api: bool = False
     use_http_batch_api: bool = False
     max_retries: PositiveInt | None = None
-    retry_delay: PositiveFloat | None = None
+    retry_delay_initial_ms: PositiveInt | None = None
+    retry_delay_max_ms: PositiveInt | None = None
     recv_window_ms: PositiveInt = 5_000
-    ws_trade_timeout_secs: float | None = 5.0
+    ws_trade_timeout_secs: PositiveFloat | None = 5.0
+    ws_auth_timeout_secs: PositiveFloat | None = 5.0
+    futures_leverages: dict[BybitSymbol, PositiveInt] | None = None
+    position_mode: dict[BybitSymbol, BybitPositionMode] | None = None
+    margin_mode: BybitMarginMode | None = None

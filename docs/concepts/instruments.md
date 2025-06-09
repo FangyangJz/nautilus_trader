@@ -1,15 +1,21 @@
 # Instruments
 
 The `Instrument` base class represents the core specification for any tradable asset/contract. There are
-currently a number of subclasses representing a range of _asset classes_ and _instrument classes_ which are supported by the platform:
+currently a number of subclasses representing a range of *asset classes* and *instrument classes* which are supported by the platform:
+
 - `Equity` (generic Equity)
 - `FuturesContract` (generic Futures Contract)
 - `FuturesSpread` (generic Futures Spread)
 - `OptionContract` (generic Option Contract)
 - `OptionSpread` (generic Option Spread)
+- `BinaryOption` (generic Binary Option instrument)
+- `Cfd` (Contract for Difference instrument)
+- `Commodity` (commodity instrument in a spot/cash market)
 - `CurrencyPair` (represents a Fiat FX or Cryptocurrency pair in a spot/cash market)
+- `CryptoOption` (Crypto Option instrument)
 - `CryptoPerpetual` (Perpetual Futures Contract a.k.a. Perpetual Swap)
 - `CryptoFuture` (Deliverable Futures Contract with Crypto assets as underlying, and for price quotes and settlement)
+- `IndexInstrument` (generic Index instrument)
 - `BettingInstrument` (Sports, gaming, or other betting)
 
 ## Symbology
@@ -17,8 +23,8 @@ currently a number of subclasses representing a range of _asset classes_ and _in
 All instruments should have a unique `InstrumentId`, which is made up of both the native symbol, and venue ID, separated by a period.
 For example, on the Binance Futures crypto exchange, the Ethereum Perpetual Futures Contract has the instrument ID `ETHUSDT-PERP.BINANCE`.
 
-All native symbols _should_ be unique for a venue (this is not always the case e.g. Binance share native symbols between spot and futures markets),
-and the `{symbol.venue}` combination _must_ be unique for a Nautilus system.
+All native symbols *should* be unique for a venue (this is not always the case e.g. Binance share native symbols between spot and futures markets),
+and the `{symbol.venue}` combination *must* be unique for a Nautilus system.
 
 :::warning
 The correct instrument must be matched to a market dataset such as ticks or order book data for logically sound operation.
@@ -42,7 +48,7 @@ from nautilus_trader.adapters.binance.spot.providers import BinanceSpotInstrumen
 from nautilus_trader.model import InstrumentId
 
 provider = BinanceSpotInstrumentProvider(client=binance_http_client)
-await self.provider.load_all_async()
+await provider.load_all_async()
 
 btcusdt = InstrumentId.from_str("BTCUSDT.BINANCE")
 instrument = provider.find(btcusdt)
@@ -55,13 +61,14 @@ from nautilus_trader.model.instruments import Instrument
 
 instrument = Instrument(...)  # <-- provide all necessary parameters
 ```
+
 See the full instrument [API Reference](../api_reference/model/instruments.md).
 
 ## Live trading
 
 Live integration adapters have defined `InstrumentProvider` classes which work in an automated way to cache the
 latest instrument definitions for the exchange. Refer to a particular `Instrument`
-object by pass the matching `InstrumentId` to data and execution related methods, and classes which require one.
+object by passing the matching `InstrumentId` to data and execution related methods and classes that require one.
 
 ## Finding instruments
 
@@ -76,11 +83,13 @@ instrument = self.cache.instrument(instrument_id)
 ```
 
 It's also possible to subscribe to any changes to a particular instrument:
+
 ```python
 self.subscribe_instrument(instrument_id)
 ```
 
 Or subscribe to all instrument changes for an entire venue:
+
 ```python
 from nautilus_trader.model import Venue
 
@@ -93,7 +102,9 @@ be passed to the actors/strategies `on_instrument()` method. A user can override
 to take upon receiving an instrument update:
 
 ```python
-def on_instrument(instrument: Instrument) -> None:
+from nautilus_trader.model.instruments import Instrument
+
+def on_instrument(self, instrument: Instrument) -> None:
     # Take some action on an instrument update
     pass
 ```
@@ -101,18 +112,19 @@ def on_instrument(instrument: Instrument) -> None:
 ## Precisions and increments
 
 The instrument objects are a convenient way to organize the specification of an
-instrument through _read-only_ properties. Correct price and quantity precisions, as well as
+instrument through *read-only* properties. Correct price and quantity precisions, as well as
 minimum price and size increments, multipliers and standard lot sizes, are available.
 
 :::note
 Most of these limits are checked by the Nautilus `RiskEngine`, otherwise invalid
-values for prices and quantities _can_ result in the exchange rejecting orders.
+values for prices and quantities *can* result in the exchange rejecting orders.
 :::
 
 ## Limits
 
 Certain value limits are optional for instruments and can be `None`, these are exchange
 dependent and can include:
+
 - `max_quantity` (maximum quantity for a single order)
 - `min_quantity` (minimum quantity for a single order)
 - `max_notional` (maximum value of a single order)
@@ -122,7 +134,7 @@ dependent and can include:
 
 :::note
 Most of these limits are checked by the Nautilus `RiskEngine`, otherwise exceeding
-published limits _can_ result in the exchange rejecting orders.
+published limits *can* result in the exchange rejecting orders.
 :::
 
 ## Prices and quantities
@@ -148,7 +160,7 @@ Margin calculations are handled by the `MarginAccount` class. This section expla
 
 ### When margins apply?
 
-Each exchange (e.g., CME or Binance) operates with a specific account types that determine whether margin calculations are applicable.
+Each exchange (e.g., CME or Binance) operates with a specific account type that determines whether margin calculations are applicable.
 When setting up an exchange venue, you'll specify one of these account types:
 
 - `AccountType.MARGIN`: Accounts that use margin calculations, which are explained below.
@@ -160,6 +172,7 @@ When setting up an exchange venue, you'll specify one of these account types:
 To understand trading on margin, let’s start with some key terms:
 
 **Notional Value**: The total contract value in the quote currency. It represents the full market value of your position. For example, with EUR/USD futures on CME (symbol 6E).
+
 - Each contract represents 125,000 EUR (EUR is base currency, USD is quote currency).
 - If the current market price is 1.1000, the notional value equals 125,000 EUR × 1.1000 (price of EUR/USD) = 137,500 USD.
 
@@ -269,13 +282,16 @@ To use any fee model in your trading system, whether built-in or custom, you spe
 Here's an example using the custom per-contract fee model:
 
 ```python
+from nautilus_trader.model.currencies import USD
+from nautilus_trader.model.objects import Money, Currency
+
 engine.add_venue(
     venue=venue,
     oms_type=OmsType.NETTING,
     account_type=AccountType.MARGIN,
     base_currency=USD,
-    fee_model=PerContractFeeModel(Money(2.50, USD)),  # Our custom fee-model injected here: 2.50 USD / per 1 filled contract
-    starting_balances=[Money(1_000_000, USD)],
+    fee_model=PerContractFeeModel(Money(2.50, USD)),  # 2.50 USD per contract
+    starting_balances=[Money(1_000_000, USD)],  # Starting with 1,000,000 USD balance
 )
 ```
 
@@ -285,7 +301,130 @@ Even small discrepancies in commission calculations can significantly impact str
 :::
 
 ## Additional info
+
 The raw instrument definition as provided by the exchange (typically from JSON serialized data) is also
 included as a generic Python dictionary. This is to retain all information
 which is not necessarily part of the unified Nautilus API, and is available to the user
 at runtime by calling the `.info` property.
+
+## Synthetic Instruments
+
+The platform supports creating customized synthetic instruments, which can generate synthetic quote
+and trades. These are useful for:
+
+- Enabling `Actor` and `Strategy` components to subscribe to quote or trade feeds.
+- Triggering emulated orders.
+- Constructing bars from synthetic quotes or trades.
+
+Synthetic instruments cannot be traded directly, as they are constructs that only exist locally
+within the platform. They serve as analytical tools, providing useful metrics based on their component
+instruments.
+
+In the future, we plan to support order management for synthetic instruments, enabling trading of
+their component instruments based on the synthetic instrument's behavior.
+
+:::info
+The venue for a synthetic instrument is always designated as `'SYNTH'`.
+:::
+
+### Formula
+
+A synthetic instrument is composed of a combination of two or more component instruments (which
+can include instruments from multiple venues), as well as a "derivation formula".
+Utilizing the dynamic expression engine powered by the [evalexpr](https://github.com/ISibboI/evalexpr)
+Rust crate, the platform can evaluate the formula to calculate the latest synthetic price tick
+from the incoming component instrument prices.
+
+See the `evalexpr` documentation for a full description of available features, operators and precedence.
+
+:::tip
+Before defining a new synthetic instrument, ensure that all component instruments are already defined and exist in the cache.
+:::
+
+### Subscribing
+
+The following example demonstrates the creation of a new synthetic instrument with an actor/strategy.
+This synthetic instrument will represent a simple spread between Bitcoin and
+Ethereum spot prices on Binance. For this example, it is assumed that spot instruments for
+`BTCUSDT.BINANCE` and `ETHUSDT.BINANCE` are already present in the cache.
+
+```python
+from nautilus_trader.model.instruments import SyntheticInstrument
+
+btcusdt_binance_id = InstrumentId.from_str("BTCUSDT.BINANCE")
+ethusdt_binance_id = InstrumentId.from_str("ETHUSDT.BINANCE")
+
+# Define the synthetic instrument
+synthetic = SyntheticInstrument(
+    symbol=Symbol("BTC-ETH:BINANCE"),
+    price_precision=8,
+    components=[
+        btcusdt_binance_id,
+        ethusdt_binance_id,
+    ],
+    formula=f"{btcusdt_binance_id} - {ethusdt_binance_id}",
+    ts_event=self.clock.timestamp_ns(),
+    ts_init=self.clock.timestamp_ns(),
+)
+
+# Recommended to store the synthetic instruments ID somewhere
+self._synthetic_id = synthetic.id
+
+# Add the synthetic instrument for use by other components
+self.add_synthetic(synthetic)
+
+# Subscribe to quotes for the synthetic instrument
+self.subscribe_quote_ticks(self._synthetic_id)
+```
+
+:::note
+The `instrument_id` for the synthetic instrument in the above example will be structured as `{symbol}.{SYNTH}`, resulting in `'BTC-ETH:BINANCE.SYNTH'`.
+:::
+
+### Updating formulas
+
+It's also possible to update a synthetic instrument formulas at any time. The following example
+shows how to achieve this with an actor/strategy.
+
+```
+# Recover the synthetic instrument from the cache (assuming `synthetic_id` was assigned)
+synthetic = self.cache.synthetic(self._synthetic_id)
+
+# Update the formula, here is a simple example of just taking the average
+new_formula = "(BTCUSDT.BINANCE + ETHUSDT.BINANCE) / 2"
+synthetic.change_formula(new_formula)
+
+# Now update the synthetic instrument
+self.update_synthetic(synthetic)
+```
+
+### Trigger instrument IDs
+
+The platform allows for emulated orders to be triggered based on synthetic instrument prices. In
+the following example, we build upon the previous one to submit a new emulated order.
+This order will be retained in the emulator until a trigger from synthetic quotes releases it.
+It will then be submitted to Binance as a MARKET order:
+
+```python
+order = self.strategy.order_factory.limit(
+    instrument_id=ETHUSDT_BINANCE.id,
+    order_side=OrderSide.BUY,
+    quantity=Quantity.from_str("1.5"),
+    price=Price.from_str("30000.00000000"),  # <-- Synthetic instrument price
+    emulation_trigger=TriggerType.DEFAULT,
+    trigger_instrument_id=self._synthetic_id,  # <-- Synthetic instrument identifier
+)
+
+self.strategy.submit_order(order)
+```
+
+### Error handling
+
+Considerable effort has been made to validate inputs, including the derivation formula for
+synthetic instruments. Despite this, caution is advised as invalid or erroneous inputs may lead to
+undefined behavior.
+
+:::info
+See the `SyntheticInstrument` [API reference](../../api_reference/model/instruments.md#class-syntheticinstrument-1)
+for a detailed understanding of input requirements and potential exceptions.
+:::

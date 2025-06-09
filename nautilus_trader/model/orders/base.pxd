@@ -127,9 +127,15 @@ cdef class Order:
     cdef readonly UUID4 init_id
     """The event ID of the `OrderInitialized` event.\n\n:returns: `UUID4`"""
     cdef readonly uint64_t ts_init
-    """UNIX timestamp (nanoseconds) when the object was initialized.\n\n:returns: `uint64_t`"""
+    """UNIX timestamp (nanoseconds) when the order was initialized.\n\n:returns: `uint64_t`"""
+    cdef readonly uint64_t ts_submitted
+    """UNIX timestamp (nanoseconds) when the order was submitted (zero unless submitted).\n\n:returns: `uint64_t`"""
+    cdef readonly uint64_t ts_accepted
+    """UNIX timestamp (nanoseconds) when the order was accepted or first filled (zero unless accepted or filled).\n\n:returns: `uint64_t`"""
+    cdef readonly uint64_t ts_closed
+    """UNIX timestamp (nanoseconds) when the order closed / lifecycle completed (zero unless closed).\n\n:returns: `uint64_t`"""
     cdef readonly uint64_t ts_last
-    """UNIX timestamp (nanoseconds) when the last event occurred.\n\n:returns: `uint64_t`"""
+    """UNIX timestamp (nanoseconds) when the last order event occurred.\n\n:returns: `uint64_t`"""
 
     cpdef str info(self)
     cpdef str status_string(self)
@@ -138,6 +144,7 @@ cdef class Order:
     cpdef str tif_string(self)
     cpdef dict to_dict(self)
 
+    cdef void set_activated_c(self, Price activation_price)
     cdef void set_triggered_price_c(self, Price triggered_price)
     cdef Price get_triggered_price_c(self)
     cdef OrderStatus status_c(self)
@@ -152,6 +159,7 @@ cdef class Order:
     cdef str side_string_c(self)
     cdef str tif_string_c(self)
     cdef bint has_price_c(self)
+    cdef bint has_activation_price_c(self)
     cdef bint has_trigger_price_c(self)
     cdef bint is_buy_c(self)
     cdef bint is_sell_c(self)

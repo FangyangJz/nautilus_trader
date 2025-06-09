@@ -21,8 +21,12 @@ import pytz
 from libc.stdint cimport uint64_t
 
 from nautilus_trader.core.correctness cimport Condition
+from nautilus_trader.core.datetime cimport format_iso8601
 from nautilus_trader.core.rust.model cimport AssetClass
 from nautilus_trader.core.rust.model cimport InstrumentClass
+from nautilus_trader.model.functions cimport asset_class_from_str
+from nautilus_trader.model.functions cimport asset_class_to_str
+from nautilus_trader.model.functions cimport instrument_class_to_str
 from nautilus_trader.model.identifiers cimport InstrumentId
 from nautilus_trader.model.identifiers cimport Symbol
 from nautilus_trader.model.instruments.base cimport Instrument
@@ -192,9 +196,35 @@ cdef class CryptoFuture(Instrument):
         self.activation_ns = activation_ns
         self.expiration_ns = expiration_ns
 
+    def __repr__(self) -> str:
+        return (
+            f"{type(self).__name__}"
+            f"(id={self.id.to_str()}, "
+            f"raw_symbol={self.raw_symbol}, "
+            f"asset_class={asset_class_to_str(self.asset_class)}, "
+            f"instrument_class={instrument_class_to_str(self.instrument_class)}, "
+            f"is_inverse={self.is_inverse}, "
+            f"underlying={self.underlying}, "
+            f"quote_currency={self.quote_currency}, "
+            f"settlement_currency={self.settlement_currency}, "
+            f"activation={format_iso8601(self.activation_utc, nanos_precision=False)}, "
+            f"expiration={format_iso8601(self.expiration_utc, nanos_precision=False)}, "
+            f"price_precision={self.price_precision}, "
+            f"price_increment={self.price_increment}, "
+            f"size_precision={self.size_precision}, "
+            f"size_increment={self.size_increment}, "
+            f"multiplier={self.multiplier}, "
+            f"lot_size={self.lot_size}, "
+            f"margin_init={self.margin_init}, "
+            f"margin_maint={self.margin_maint}, "
+            f"maker_fee={self.maker_fee}, "
+            f"taker_fee={self.taker_fee}, "
+            f"info={self.info})"
+        )
+
     cpdef Currency get_base_currency(self):
         """
-        Return the instruments base currency.
+        Return the instruments base currency (underlying).
 
         Returns
         -------
@@ -202,6 +232,17 @@ cdef class CryptoFuture(Instrument):
 
         """
         return self.underlying
+
+    cpdef Currency get_settlement_currency(self):
+        """
+        Return the currency used to settle a trade of the instrument.
+
+        Returns
+        -------
+        Currency
+
+        """
+        return self.settlement_currency
 
     @property
     def activation_utc(self) -> pd.Timestamp:
@@ -228,40 +269,6 @@ cdef class CryptoFuture(Instrument):
 
         """
         return pd.Timestamp(self.expiration_ns, tz=pytz.utc)
-
-    @staticmethod
-    cdef CryptoFuture from_pyo3_c(pyo3_instrument):
-        return CryptoFuture(
-            instrument_id=InstrumentId.from_str_c(pyo3_instrument.id.value),
-            raw_symbol=Symbol(pyo3_instrument.raw_symbol.value),
-            underlying=Currency.from_str_c(pyo3_instrument.underlying.code),
-            quote_currency=Currency.from_str_c(pyo3_instrument.quote_currency.code),
-            settlement_currency=Currency.from_str_c(pyo3_instrument.settlement_currency.code),
-            is_inverse=pyo3_instrument.is_inverse,
-            activation_ns=pyo3_instrument.activation_ns,
-            expiration_ns=pyo3_instrument.expiration_ns,
-            price_precision=pyo3_instrument.price_precision,
-            size_precision=pyo3_instrument.size_precision,
-            price_increment=Price.from_raw_c(pyo3_instrument.price_increment.raw, pyo3_instrument.price_precision),
-            size_increment=Quantity.from_raw_c(pyo3_instrument.size_increment.raw, pyo3_instrument.size_precision),
-            max_quantity=Quantity.from_raw_c(pyo3_instrument.max_quantity.raw,pyo3_instrument.max_quantity.precision) if pyo3_instrument.max_quantity is not None else None,
-            min_quantity=Quantity.from_raw_c(pyo3_instrument.min_quantity.raw, pyo3_instrument.min_quantity.precision) if pyo3_instrument.min_quantity is not None else None,
-            max_notional=Money.from_str_c(str(pyo3_instrument.max_notional)) if pyo3_instrument.max_notional is not None else None,
-            min_notional=Money.from_str_c(str(pyo3_instrument.min_notional)) if pyo3_instrument.min_notional is not None else None,
-            max_price=Price.from_raw_c(pyo3_instrument.max_price.raw, pyo3_instrument.max_price.precision) if pyo3_instrument.max_price is not None else None,
-            min_price=Price.from_raw_c(pyo3_instrument.min_price.raw, pyo3_instrument.min_price.precision) if pyo3_instrument.min_price is not None else None,
-            margin_init=Decimal(pyo3_instrument.margin_init),
-            margin_maint=Decimal(pyo3_instrument.margin_maint),
-            maker_fee=Decimal(pyo3_instrument.maker_fee),
-            taker_fee=Decimal(pyo3_instrument.taker_fee),
-            ts_event=pyo3_instrument.ts_event,
-            ts_init=pyo3_instrument.ts_init,
-            info=pyo3_instrument.info,
-        )
-
-    @staticmethod
-    def from_pyo3(pyo3_instrument):
-        return CryptoFuture.from_pyo3_c(pyo3_instrument)
 
     @staticmethod
     cdef CryptoFuture from_dict_c(dict values):
@@ -336,6 +343,37 @@ cdef class CryptoFuture(Instrument):
         }
 
     @staticmethod
+    cdef CryptoFuture from_pyo3_c(pyo3_instrument):
+        return CryptoFuture(
+            instrument_id=InstrumentId.from_str_c(pyo3_instrument.id.value),
+            raw_symbol=Symbol(pyo3_instrument.raw_symbol.value),
+            underlying=Currency.from_str_c(pyo3_instrument.underlying.code),
+            quote_currency=Currency.from_str_c(pyo3_instrument.quote_currency.code),
+            settlement_currency=Currency.from_str_c(pyo3_instrument.settlement_currency.code),
+            is_inverse=pyo3_instrument.is_inverse,
+            activation_ns=pyo3_instrument.activation_ns,
+            expiration_ns=pyo3_instrument.expiration_ns,
+            price_precision=pyo3_instrument.price_precision,
+            size_precision=pyo3_instrument.size_precision,
+            price_increment=Price.from_raw_c(pyo3_instrument.price_increment.raw, pyo3_instrument.price_precision),
+            size_increment=Quantity.from_raw_c(pyo3_instrument.size_increment.raw, pyo3_instrument.size_precision),
+            max_quantity=Quantity.from_raw_c(pyo3_instrument.max_quantity.raw,pyo3_instrument.max_quantity.precision) if pyo3_instrument.max_quantity is not None else None,
+            min_quantity=Quantity.from_raw_c(pyo3_instrument.min_quantity.raw, pyo3_instrument.min_quantity.precision) if pyo3_instrument.min_quantity is not None else None,
+            max_notional=Money.from_str_c(str(pyo3_instrument.max_notional)) if pyo3_instrument.max_notional is not None else None,
+            min_notional=Money.from_str_c(str(pyo3_instrument.min_notional)) if pyo3_instrument.min_notional is not None else None,
+            max_price=Price.from_raw_c(pyo3_instrument.max_price.raw, pyo3_instrument.max_price.precision) if pyo3_instrument.max_price is not None else None,
+            min_price=Price.from_raw_c(pyo3_instrument.min_price.raw, pyo3_instrument.min_price.precision) if pyo3_instrument.min_price is not None else None,
+            margin_init=Decimal(pyo3_instrument.margin_init),
+            margin_maint=Decimal(pyo3_instrument.margin_maint),
+            maker_fee=Decimal(pyo3_instrument.maker_fee),
+            taker_fee=Decimal(pyo3_instrument.taker_fee),
+            ts_event=pyo3_instrument.ts_event,
+            ts_init=pyo3_instrument.ts_init,
+            info=pyo3_instrument.info,
+        )
+
+
+    @staticmethod
     def from_dict(dict values) -> CryptoFuture:
         """
         Return an instrument from the given initialization values.
@@ -363,3 +401,20 @@ cdef class CryptoFuture(Instrument):
 
         """
         return CryptoFuture.to_dict_c(obj)
+
+    @staticmethod
+    def from_pyo3(pyo3_instrument):
+        """
+        Return legacy Cython crypto future instrument converted from the given pyo3 Rust object.
+
+        Parameters
+        ----------
+        pyo3_instrument : nautilus_pyo3.CryptoFuture
+            The pyo3 Rust option contract instrument to convert from.
+
+        Returns
+        -------
+        CryptoFuture
+
+        """
+        return CryptoFuture.from_pyo3_c(pyo3_instrument)

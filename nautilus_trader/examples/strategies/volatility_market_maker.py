@@ -70,6 +70,8 @@ class VolatilityMarketMakerConfig(StrategyConfig, frozen=True):
     client_id : ClientId, optional
         The custom client ID for data and execution.
         For example if you have multiple clients for Binance you might use 'BINANCE-SPOT'.
+    reduce_only_on_stop : bool, default True
+        If position closing market orders on stop should be reduce-only.
 
     """
 
@@ -80,6 +82,7 @@ class VolatilityMarketMakerConfig(StrategyConfig, frozen=True):
     trade_size: Decimal
     emulation_trigger: str = "NO_TRIGGER"
     client_id: ClientId | None = None
+    reduce_only_on_stop: bool = True
 
 
 class VolatilityMarketMaker(Strategy):
@@ -123,7 +126,11 @@ class VolatilityMarketMaker(Strategy):
         self.register_indicator_for_bars(self.config.bar_type, self.atr)
 
         # Get historical data
-        self.request_bars(self.config.bar_type, client_id=self.client_id)
+        self.request_bars(
+            self.config.bar_type,
+            client_id=self.client_id,
+            start=self.clock.utc_now() - pd.Timedelta(days=1),
+        )
 
         # Subscribe to live data
         self.subscribe_bars(self.config.bar_type, client_id=self.client_id)
@@ -218,6 +225,12 @@ class VolatilityMarketMaker(Strategy):
         """
         # For debugging (must add a subscription)
         self.log.info(repr(tick), LogColor.CYAN)
+
+        # own_book = self.cache.own_order_book(tick.instrument_id)
+        # if not own_book:
+        #     return
+        # self.log.info("\n" + repr(own_book), LogColor.MAGENTA)
+        # self.log.info("\n" + own_book.pprint(), LogColor.MAGENTA)
 
     def on_trade_tick(self, tick: TradeTick) -> None:
         """
@@ -375,7 +388,11 @@ class VolatilityMarketMaker(Strategy):
         # if open_orders:
         #     self.cancel_orders(open_orders, client_id=self.client_id)
 
-        self.close_all_positions(self.config.instrument_id, client_id=self.client_id)
+        self.close_all_positions(
+            instrument_id=self.config.instrument_id,
+            client_id=self.client_id,
+            reduce_only=self.config.reduce_only_on_stop,
+        )
 
         # Unsubscribe from data
         self.unsubscribe_bars(self.config.bar_type, client_id=self.client_id)

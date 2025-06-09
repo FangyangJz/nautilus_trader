@@ -271,7 +271,7 @@ class TestOrderBook:
         )
 
         # Assert
-        assert book.count == 2
+        assert book.update_count == 2
         assert book.ts_last == 1
         assert book.best_bid_price() == 10.0
         assert book.best_ask_price() == 11.0
@@ -291,6 +291,8 @@ class TestOrderBook:
         )
         bid_level = book.bids()[0]
         ask_level = book.asks()[0]
+        assert bid_level.side == OrderSide.BUY
+        assert ask_level.side == OrderSide.SELL
         assert len(bid_level.orders()) == 1
         assert len(ask_level.orders()) == 1
         assert bid_level.price == Price.from_str("10.0")
@@ -326,7 +328,7 @@ class TestOrderBook:
         # Assert
         assert (
             repr(book)
-            == "OrderBook L2_MBP\ninstrument: AUD/USD.SIM\nsequence: 0\nts_last: 0\ncount: 2\n╭──────┬───────┬──────╮\n│ bids │ price │ asks │\n├──────┼───────┼──────┤\n│      │ 11.0  │ [6]  │\n│ [5]  │ 10.0  │      │\n╰──────┴───────┴──────╯"  # noqa
+            == "OrderBook L2_MBP\ninstrument: AUD/USD.SIM\nsequence: 0\nts_last: 0\nupdate_count: 2\n╭──────┬───────┬──────╮\n│ bids │ price │ asks │\n├──────┼───────┼──────┤\n│      │ 11.0  │ [6]  │\n│ [5]  │ 10.0  │      │\n╰──────┴───────┴──────╯"  # noqa
         )  # <-- Calls pprint internally
 
     def test_pprint_when_no_orders(self):
@@ -458,7 +460,7 @@ class TestOrderBook:
 
         # Assert
         assert self.empty_book.best_ask_price() == Price(0.5814, 4)
-        assert self.empty_book.count == 1
+        assert self.empty_book.update_count == 1
         assert self.empty_book.sequence == 1
 
     def test_orderbook_operation_add(self):
@@ -483,7 +485,7 @@ class TestOrderBook:
 
         # Assert
         assert self.empty_book.best_ask_price() == Price(0.5900, 4)
-        assert self.empty_book.count == 1
+        assert self.empty_book.update_count == 1
         assert self.empty_book.sequence == 1
 
     def test_orderbook_operations(self):
@@ -703,7 +705,7 @@ class TestOrderBook:
         assert len(data) == 74509  # No trades
         assert book.ts_last == 1703548799446821072
         assert book.sequence == 59585
-        assert book.count == 74509
+        assert book.update_count == 74509
         assert len(book.bids()) == 922
         assert len(book.asks()) == 565
         assert book.best_bid_price() == Price.from_str("4810.00")

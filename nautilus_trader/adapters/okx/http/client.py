@@ -94,7 +94,7 @@ class OKXHttpClient:
 
         self._headers: dict[str, Any] = {
             "Content-Type": "application/json",
-            "User-Agent": nautilus_trader.USER_AGENT,
+            "User-Agent": nautilus_trader.NAUTILUS_USER_AGENT,
         }
         self._client = HttpClient(
             keyed_quotas=ratelimiter_quotas or [],
@@ -131,7 +131,7 @@ class OKXHttpClient:
         if body == "{}" or body == "None":
             body = ""
         message = str(timestamp) + method.upper() + url_path + body
-        digest = hmac_signature(self._api_secret, message).encode()
+        digest = bytes.fromhex(hmac_signature(self._api_secret, message))
         return base64.b64encode(digest).decode()
 
     async def send_request(

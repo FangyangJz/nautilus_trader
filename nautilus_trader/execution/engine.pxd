@@ -19,7 +19,6 @@ from nautilus_trader.common.component cimport TimeEvent
 from nautilus_trader.common.generators cimport PositionIdGenerator
 from nautilus_trader.core.rust.model cimport OmsType
 from nautilus_trader.core.rust.model cimport OrderSide
-from nautilus_trader.execution.algorithm cimport ExecAlgorithm
 from nautilus_trader.execution.client cimport ExecutionClient
 from nautilus_trader.execution.messages cimport BatchCancelOrders
 from nautilus_trader.execution.messages cimport CancelAllOrders
@@ -31,6 +30,7 @@ from nautilus_trader.execution.messages cimport SubmitOrderList
 from nautilus_trader.execution.messages cimport TradingCommand
 from nautilus_trader.model.events.order cimport OrderEvent
 from nautilus_trader.model.events.order cimport OrderFilled
+from nautilus_trader.model.events.position cimport PositionEvent
 from nautilus_trader.model.identifiers cimport InstrumentId
 from nautilus_trader.model.identifiers cimport PositionId
 from nautilus_trader.model.identifiers cimport StrategyId
@@ -52,9 +52,12 @@ cdef class ExecutionEngine(Component):
     cdef readonly dict[StrategyId, OmsType] _oms_overrides
     cdef readonly dict[InstrumentId, StrategyId] _external_order_claims
     cdef readonly str snapshot_positions_timer_name
+    cdef list[PositionEvent] _pending_position_events
 
     cdef readonly bint debug
     """If debug mode is active (will provide extra debug logging).\n\n:returns: `bool`"""
+    cdef readonly bint manage_own_order_books
+    """If the execution engine should maintain own order books based on commands and events.\n\n:returns: `bool`"""
     cdef readonly bint snapshot_orders
     """If order state snapshots should be persisted.\n\n:returns: `bool`"""
     cdef readonly bint snapshot_positions
@@ -74,8 +77,9 @@ cdef class ExecutionEngine(Component):
     cpdef bint check_disconnected(self)
     cpdef bint check_residuals(self)
     cpdef StrategyId get_external_order_claim(self, InstrumentId instrument_id)
-    cpdef set get_external_order_claims_instruments(self)
+    cpdef set[InstrumentId] get_external_order_claims_instruments(self)
     cpdef set[ExecutionClient] get_clients_for_orders(self, list[Order] orders)
+    cpdef void set_manage_own_order_books(self, bint value)
 
 # -- REGISTRATION ---------------------------------------------------------------------------------
 
@@ -97,6 +101,8 @@ cdef class ExecutionEngine(Component):
     cpdef Price _last_px_for_conversion(self, InstrumentId instrument_id, OrderSide order_side)
     cpdef void _set_order_base_qty(self, Order order, Quantity base_qty)
     cpdef void _deny_order(self, Order order, str reason)
+    cpdef object _get_or_init_own_order_book(self, InstrumentId instrument_id)
+    cpdef void _add_own_book_order(self, Order order)
 
 # -- COMMANDS -------------------------------------------------------------------------------------
 
@@ -131,5 +137,5 @@ cdef class ExecutionEngine(Component):
     cpdef bint _will_flip_position(self, Position position, OrderFilled fill)
     cpdef void _flip_position(self, Instrument instrument, Position position, OrderFilled fill, OmsType oms_type)
     cpdef void _create_order_state_snapshot(self, Order order)
-    cpdef void _create_position_state_snapshot(self, Position position)
+    cpdef void _create_position_state_snapshot(self, Position position, bint open_only)
     cpdef void _snapshot_open_position_states(self, TimeEvent event)

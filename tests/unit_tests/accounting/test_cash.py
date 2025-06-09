@@ -13,9 +13,13 @@
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
 
+from decimal import Decimal
+
 import pytest
 
 from nautilus_trader.accounting.accounts.cash import CashAccount
+from nautilus_trader.accounting.manager import AccountsManager
+from nautilus_trader.common.component import Logger
 from nautilus_trader.common.component import TestClock
 from nautilus_trader.common.factories import OrderFactory
 from nautilus_trader.core.uuid import UUID4
@@ -29,17 +33,25 @@ from nautilus_trader.model.currencies import USDT
 from nautilus_trader.model.enums import AccountType
 from nautilus_trader.model.enums import LiquiditySide
 from nautilus_trader.model.enums import OrderSide
+from nautilus_trader.model.enums import OrderType
 from nautilus_trader.model.events import AccountState
+from nautilus_trader.model.events import OrderFilled
 from nautilus_trader.model.identifiers import AccountId
+from nautilus_trader.model.identifiers import ClientOrderId
+from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.identifiers import PositionId
 from nautilus_trader.model.identifiers import StrategyId
+from nautilus_trader.model.identifiers import TradeId
+from nautilus_trader.model.identifiers import TraderId
 from nautilus_trader.model.identifiers import Venue
+from nautilus_trader.model.identifiers import VenueOrderId
 from nautilus_trader.model.objects import AccountBalance
 from nautilus_trader.model.objects import Money
 from nautilus_trader.model.objects import Price
 from nautilus_trader.model.objects import Quantity
 from nautilus_trader.model.position import Position
 from nautilus_trader.test_kit.providers import TestInstrumentProvider
+from nautilus_trader.test_kit.stubs.component import TestComponentStubs
 from nautilus_trader.test_kit.stubs.events import TestEventStubs
 from nautilus_trader.test_kit.stubs.execution import TestExecStubs
 from nautilus_trader.test_kit.stubs.identifiers import TestIdStubs
@@ -271,7 +283,7 @@ class TestCashAccount:
         )
 
         # Assert
-        assert result == Money(800_032.00, USD)  # Notional + expected commission
+        assert result == Money(800_000.00, USD)  # Notional
 
     def test_calculate_balance_locked_sell(self):
         # Arrange
@@ -305,7 +317,7 @@ class TestCashAccount:
         )
 
         # Assert
-        assert result == Money(1_000_040.00, AUD)  # Notional + expected commission
+        assert result == Money(1_000_000.00, AUD)  # Notional
 
     def test_calculate_balance_locked_sell_no_base_currency(self):
         # Arrange
@@ -606,3 +618,217 @@ class TestCashAccount:
 
         # Assert
         assert result == Money(5294, JPY)
+
+
+def test_cash_account_eth_usdt_balance_calculation():
+    # Arrange
+    event = AccountState(
+        account_id=AccountId("BINANCE-001"),
+        account_type=AccountType.CASH,
+        base_currency=None,  # Multi-currency account
+        reported=False,
+        balances=[
+            AccountBalance(
+                Money(3_655.22600905, USDT),
+                Money(0.00000000, USDT),
+                Money(3_655.22600905, USDT),
+            ),
+            AccountBalance(
+                Money(3_946.76679000, ETH),
+                Money(0.00000000, ETH),
+                Money(3_946.76679000, ETH),
+            ),
+        ],
+        margins=[],
+        info={},
+        event_id=UUID4(),
+        ts_event=0,
+        ts_init=0,
+    )
+
+    account = CashAccount(event)
+
+    # Act - Simulate locking the entire ETH balance
+    eth_usdt_id = InstrumentId.from_str("ETHUSDT.BINANCE")
+    locked_eth = Money(3_946.76679000, ETH)
+    account.update_balance_locked(eth_usdt_id, locked_eth)
+
+    # Assert
+    eth_balance = account.balance(ETH)
+    usdt_balance = account.balance(USDT)
+
+    assert eth_balance.total == Money(3_946.76679000, ETH)
+    assert eth_balance.locked == Money(3_946.76679000, ETH)
+    assert eth_balance.free == Money(0.0, ETH)
+
+    assert usdt_balance.total == Money(3_655.22600905, USDT)
+    assert usdt_balance.locked == Money(0.0, USDT)
+    assert usdt_balance.free == Money(3_655.22600905, USDT)
+
+
+def test_cash_account_update_with_fill_to_zero():
+    # Arrange
+    clock = TestClock()
+    cache = TestComponentStubs.cache()
+    logger = Logger("Portfolio")
+
+    instrument = TestInstrumentProvider.ethusdt_binance()
+    cache.add_instrument(instrument)
+
+    event = AccountState(
+        account_id=AccountId("BINANCE-001"),
+        account_type=AccountType.CASH,
+        base_currency=None,  # Multi-currency account
+        reported=False,
+        balances=[
+            AccountBalance(
+                Money(10000.0, USDT),
+                Money(0.0, USDT),
+                Money(10000.0, USDT),
+            ),
+            AccountBalance(
+                Money(10.0, ETH),
+                Money(0.0, ETH),
+                Money(10.0, ETH),
+            ),
+        ],
+        margins=[],
+        info={},
+        event_id=UUID4(),
+        ts_event=0,
+        ts_init=0,
+    )
+
+    account = CashAccount(event, calculate_account_state=True)
+    cache.add_account(account)
+
+    accounts_manager = AccountsManager(
+        cache=cache,
+        clock=clock,
+        logger=logger,
+    )
+
+    # Create order fill event that sells all ETH
+    fill = OrderFilled(
+        trader_id=TraderId("TRADER-001"),
+        strategy_id=StrategyId("S-001"),
+        instrument_id=instrument.id,
+        client_order_id=ClientOrderId("O-20221110-001"),
+        venue_order_id=VenueOrderId("V-001"),
+        account_id=account.id,
+        trade_id=TradeId("T-001"),
+        order_side=OrderSide.SELL,
+        order_type=OrderType.LIMIT,
+        last_qty=Quantity.from_str("10.00000"),  # Entire ETH balance
+        last_px=Price.from_str("10_000.00000"),
+        currency=USDT,
+        commission=Money(10.0, USDT),
+        liquidity_side=LiquiditySide.TAKER,
+        position_id=PositionId("ETH"),
+        event_id=UUID4(),
+        ts_event=0,
+        ts_init=0,
+    )
+
+    # Act
+    accounts_manager.update_balances(
+        account=account,
+        instrument=instrument,
+        fill=fill,
+    )
+
+    # Assert
+    eth_balance = account.balance(ETH)
+    usdt_balance = account.balance(USDT)
+
+    # ETH balance should be zero
+    assert eth_balance.total.as_decimal() == Decimal("0.00000000")
+    assert eth_balance.locked.as_decimal() == Decimal("0.00000000")
+    assert eth_balance.free.as_decimal() == Decimal("0.00000000")
+
+    # USDT balance should be increased by the trade value minus commission
+    assert usdt_balance.total.as_decimal() == Decimal("109990.00000000")
+    assert usdt_balance.locked.as_decimal() == Decimal("0.00000000")
+    assert usdt_balance.free.as_decimal() == Decimal("109990.00000000")
+
+
+class TestCashAccountPurge:
+    def test_purge_account_events_retains_latest_when_all_events_purged(self):
+        # Arrange
+        account = TestExecStubs.cash_account()
+
+        # Add multiple account state events with different timestamps
+        event1 = AccountState(
+            account_id=account.id,
+            account_type=AccountType.CASH,
+            base_currency=USD,
+            reported=True,
+            balances=[
+                AccountBalance(
+                    Money(1_000_000.00, USD),
+                    Money(0.00, USD),
+                    Money(1_000_000.00, USD),
+                ),
+            ],
+            margins=[],
+            info={},
+            event_id=UUID4(),
+            ts_event=100_000_000,  # Old event
+            ts_init=100_000_000,
+        )
+
+        event2 = AccountState(
+            account_id=account.id,
+            account_type=AccountType.CASH,
+            base_currency=USD,
+            reported=True,
+            balances=[
+                AccountBalance(
+                    Money(1_500_000.00, USD),
+                    Money(0.00, USD),
+                    Money(1_500_000.00, USD),
+                ),
+            ],
+            margins=[],
+            info={},
+            event_id=UUID4(),
+            ts_event=200_000_000,  # Newer event
+            ts_init=200_000_000,
+        )
+
+        event3 = AccountState(
+            account_id=account.id,
+            account_type=AccountType.CASH,
+            base_currency=USD,
+            reported=True,
+            balances=[
+                AccountBalance(
+                    Money(2_000_000.00, USD),
+                    Money(0.00, USD),
+                    Money(2_000_000.00, USD),
+                ),
+            ],
+            margins=[],
+            info={},
+            event_id=UUID4(),
+            ts_event=300_000_000,  # Latest event
+            ts_init=300_000_000,
+        )
+
+        account.apply(event1)
+        account.apply(event2)
+        account.apply(event3)
+
+        # Verify we have 4 events (initial + 3 added)
+        assert account.event_count == 4
+
+        # Act - Purge all events (lookback_secs=0, ts_now way in future)
+        account.purge_account_events(ts_now=1_000_000_000, lookback_secs=0)
+
+        # Assert - Should retain exactly 1 event (the latest)
+        assert account.event_count == 1
+        assert account.last_event == event3  # Latest event retained
+        assert account.events == [event3]
+
+        # Verify account state reflects the latest event
+        assert account.balance_total() == Money(2_000_000.00, USD)

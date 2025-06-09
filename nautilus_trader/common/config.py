@@ -19,6 +19,7 @@ import hashlib
 import importlib
 from collections.abc import Callable
 from decimal import Decimal
+from io import StringIO
 from typing import Annotated, Any
 
 import msgspec
@@ -28,10 +29,13 @@ from msgspec import Meta
 from nautilus_trader.common import Environment
 from nautilus_trader.core.correctness import PyCondition
 from nautilus_trader.core.uuid import UUID4
+from nautilus_trader.model.data import BarSpecification
 from nautilus_trader.model.data import BarType
 from nautilus_trader.model.identifiers import ComponentId
 from nautilus_trader.model.identifiers import Identifier
 from nautilus_trader.model.identifiers import InstrumentId
+from nautilus_trader.model.objects import Currency
+from nautilus_trader.model.objects import Money
 from nautilus_trader.model.objects import Price
 from nautilus_trader.model.objects import Quantity
 
@@ -54,7 +58,7 @@ CUSTOM_ENCODINGS: dict[type, Callable] = {
 
 
 CUSTOM_DECODINGS: dict[type, Callable] = {
-    pd.DataFrame: lambda x: pd.read_json(x),
+    pd.DataFrame: lambda x: pd.read_json(StringIO(x)),
 }
 
 
@@ -78,6 +82,24 @@ def resolve_config_path(path: str) -> type[NautilusConfig]:
     return config
 
 
+def nautilus_schema_hook(type_: type[Any]) -> dict[str, Any]:
+    if issubclass(type_, Identifier):
+        return {"type": "string"}
+    if type_ in (Currency, Price, Quantity, Money, BarType, BarSpecification):
+        return {"type": "string"}
+    if type_ in (Decimal, UUID4):
+        return {"type": "string"}
+    if type_ == pd.Timestamp:
+        return {"type": "string", "format": "date-time"}
+    if type_ == pd.Timedelta:
+        return {"type": "string"}
+    if type_ == Environment:
+        return {"type": "string"}
+    if type_ is type:  # Handle <class 'type'>
+        return {"type": "string"}  # Represent type objects as strings
+    raise TypeError(f"Unsupported type for schema generation: {type_}")
+
+
 def msgspec_encoding_hook(obj: Any) -> Any:
     if isinstance(obj, Decimal):
         return str(obj)
@@ -85,9 +107,9 @@ def msgspec_encoding_hook(obj: Any) -> Any:
         return obj.value
     if isinstance(obj, Identifier):
         return obj.value
-    if isinstance(obj, BarType):
+    if isinstance(obj, (BarType | BarSpecification)):
         return str(obj)
-    if isinstance(obj, (Price | Quantity)):
+    if isinstance(obj, (Price | Quantity | Money | Currency)):
         return str(obj)
     if isinstance(obj, (pd.Timestamp | pd.Timedelta)):
         return obj.isoformat()
@@ -102,7 +124,7 @@ def msgspec_encoding_hook(obj: Any) -> Any:
     raise TypeError(f"Encoding objects of type {obj.__class__} is unsupported")
 
 
-def msgspec_decoding_hook(obj_type: type, obj: Any) -> Any:
+def msgspec_decoding_hook(obj_type: type, obj: Any) -> Any:  # noqa: C901 (too complex)
     if obj_type in (Decimal, pd.Timestamp, pd.Timedelta):
         return obj_type(obj)
     if obj_type == UUID4:
@@ -111,12 +133,18 @@ def msgspec_decoding_hook(obj_type: type, obj: Any) -> Any:
         return InstrumentId.from_str(obj)
     if issubclass(obj_type, Identifier):
         return obj_type(obj)
+    if obj_type == BarSpecification:
+        return BarSpecification.from_str(obj)
     if obj_type == BarType:
         return BarType.from_str(obj)
     if obj_type == Price:
         return Price.from_str(obj)
     if obj_type == Quantity:
         return Quantity.from_str(obj)
+    if obj_type == Money:
+        return Money.from_str(obj)
+    if obj_type == Currency:
+        return Currency.from_str(obj)
     if obj_type == Environment:
         return obj_type(obj)
     if obj_type in CUSTOM_DECODINGS:
@@ -172,6 +200,18 @@ class NautilusConfig(msgspec.Struct, kw_only=True, frozen=True):
 
         """
         return cls.__module__ + ":" + cls.__qualname__
+
+    @classmethod
+    def json_schema(cls) -> dict[str, Any]:
+        """
+        Generate a JSON schema for this configuration class.
+
+        Returns
+        -------
+        dict[str, Any]
+
+        """
+        return msgspec.json.schema(cls, schema_hook=nautilus_schema_hook)
 
     @classmethod
     def parse(cls, raw: bytes | str) -> Any:
@@ -502,6 +542,10 @@ class LoggingConfig(NautilusConfig, frozen=True):
         This will override automatic naming, and no daily file rotation will occur.
     log_file_format : str { 'JSON' }, optional
         The log file format. If ``None`` (default) then will log in plain text.
+    log_file_max_size : PositiveInt, optional
+        The maximum size of log files in bytes before rotation occurs.
+    log_file_max_backup_count : NonNegativeInt, default 5
+        The maximum number of backup log files to keep when rotating.
     log_colors : bool, default True
         If ANSI codes should be used to produce colored log lines.
     log_component_levels : dict[str, LogLevel]
@@ -526,6 +570,8 @@ class LoggingConfig(NautilusConfig, frozen=True):
     log_directory: str | None = None
     log_file_name: str | None = None
     log_file_format: str | None = None
+    log_file_max_size: PositiveInt | None = None
+    log_file_max_backup_count: NonNegativeInt = 5
     log_colors: bool = True
     log_component_levels: dict[str, str] | None = None
     bypass_logging: bool = False

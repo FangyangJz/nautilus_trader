@@ -44,6 +44,7 @@ from nautilus_trader.adapters.dydx.grpc.errors import DYDXGRPCError
 from nautilus_trader.adapters.dydx.grpc.order_builder import MAX_CLIENT_ID
 from nautilus_trader.adapters.dydx.grpc.order_builder import DYDXGRPCOrderType
 from nautilus_trader.adapters.dydx.grpc.order_builder import OrderBuilder
+from nautilus_trader.adapters.dydx.grpc.order_builder import OrderExecution
 from nautilus_trader.adapters.dydx.grpc.order_builder import OrderFlags
 from nautilus_trader.adapters.dydx.http.account import DYDXAccountHttpAPI
 from nautilus_trader.adapters.dydx.http.client import DYDXHttpClient
@@ -65,6 +66,7 @@ from nautilus_trader.common.component import LiveClock
 from nautilus_trader.common.component import Logger
 from nautilus_trader.common.component import MessageBus
 from nautilus_trader.common.enums import LogColor
+from nautilus_trader.common.enums import LogLevel
 from nautilus_trader.core.correctness import PyCondition
 from nautilus_trader.core.datetime import dt_to_unix_nanos
 from nautilus_trader.core.datetime import nanos_to_secs
@@ -72,6 +74,10 @@ from nautilus_trader.core.uuid import UUID4
 from nautilus_trader.execution.messages import BatchCancelOrders
 from nautilus_trader.execution.messages import CancelAllOrders
 from nautilus_trader.execution.messages import CancelOrder
+from nautilus_trader.execution.messages import GenerateFillReports
+from nautilus_trader.execution.messages import GenerateOrderStatusReport
+from nautilus_trader.execution.messages import GenerateOrderStatusReports
+from nautilus_trader.execution.messages import GeneratePositionStatusReports
 from nautilus_trader.execution.messages import SubmitOrder
 from nautilus_trader.execution.messages import SubmitOrderList
 from nautilus_trader.execution.reports import FillReport
@@ -82,6 +88,7 @@ from nautilus_trader.live.retry import RetryManagerPool
 from nautilus_trader.model.enums import AccountType
 from nautilus_trader.model.enums import OmsType
 from nautilus_trader.model.enums import OrderSide
+from nautilus_trader.model.enums import OrderStatus
 from nautilus_trader.model.enums import OrderType
 from nautilus_trader.model.enums import PositionSide
 from nautilus_trader.model.enums import TimeInForce
@@ -284,7 +291,9 @@ class DYDXExecutionClient(LiveExecutionClient):
         self._retry_manager_pool = RetryManagerPool[None](
             pool_size=100,
             max_retries=config.max_retries or 0,
-            retry_delay_secs=config.retry_delay or 1.0,
+            delay_initial_ms=config.retry_delay_initial_ms or 1_000,
+            delay_max_ms=config.retry_delay_max_ms or 10_000,
+            backoff_factor=2,
             logger=self._log,
             exc_types=(DYDXError, DYDXGRPCError, AioRpcError),
             retry_check=should_retry,
@@ -420,14 +429,15 @@ class DYDXExecutionClient(LiveExecutionClient):
 
     async def generate_order_status_report(  # noqa: C901
         self,
-        instrument_id: InstrumentId,
-        client_order_id: ClientOrderId | None = None,
-        venue_order_id: VenueOrderId | None = None,
+        command: GenerateOrderStatusReport,
     ) -> OrderStatusReport | None:
         """
         Create an order status report for a specific order.
         """
         self._log.debug("Requesting OrderStatusReport...")
+
+        client_order_id = command.client_order_id
+        venue_order_id = command.venue_order_id
         PyCondition.is_false(
             client_order_id is None and venue_order_id is None,
             "both `client_order_id` and `venue_order_id` were `None`",
@@ -470,7 +480,7 @@ class DYDXExecutionClient(LiveExecutionClient):
 
         try:
             report = await self._get_order_status_report(
-                instrument_id=instrument_id,
+                instrument_id=command.instrument_id,
                 client_order_id=client_order_id,
                 venue_order_id=venue_order_id,
                 order_side=order.side,
@@ -492,7 +502,7 @@ class DYDXExecutionClient(LiveExecutionClient):
                 # so that there are no longer subsequent retries (we don't expect many of these).
                 self.generate_order_rejected(
                     strategy_id=order.strategy_id,
-                    instrument_id=instrument_id,
+                    instrument_id=command.instrument_id,
                     client_order_id=client_order_id,
                     reason=str(e.message),
                     ts_event=self._clock.timestamp_ns(),
@@ -508,10 +518,7 @@ class DYDXExecutionClient(LiveExecutionClient):
 
     async def generate_order_status_reports(
         self,
-        instrument_id: InstrumentId | None = None,
-        start: pd.Timestamp | None = None,
-        end: pd.Timestamp | None = None,
-        open_only: bool = False,
+        command: GenerateOrderStatusReports,
     ) -> list[OrderStatusReport]:
         """
         Create an order status report.
@@ -520,18 +527,20 @@ class DYDXExecutionClient(LiveExecutionClient):
         reports: list[OrderStatusReport] = []
 
         symbol = None
-        start_dt = start.to_pydatetime() if start is not None else None
-        end_dt = end.to_pydatetime() if end is not None else None
+        start_dt = command.start.to_pydatetime() if command.start is not None else None
+        end_dt = command.end.to_pydatetime() if command.end is not None else None
 
-        if instrument_id is not None:
-            symbol = instrument_id.symbol.value.removesuffix("-PERP")
+        if command.instrument_id is not None:
+            symbol = command.instrument_id.symbol.value.removesuffix("-PERP")
 
         dydx_orders = await self._http_account.get_orders(
             address=self._wallet_address,
             subaccount_number=self._subaccount,
             symbol=symbol,
             order_status=(
-                [DYDXOrderStatus.OPEN, DYDXOrderStatus.BEST_EFFORT_OPENED] if open_only else None
+                [DYDXOrderStatus.OPEN, DYDXOrderStatus.BEST_EFFORT_OPENED]
+                if command.open_only
+                else None
             ),
         )
 
@@ -580,16 +589,18 @@ class DYDXExecutionClient(LiveExecutionClient):
 
         len_reports = len(reports)
         plural = "" if len_reports == 1 else "s"
-        self._log.info(f"Received {len(reports)} OrderStatusReport{plural}")
+        receipt_log = f"Received {len(reports)} OrderStatusReport{plural}"
+
+        if command.log_receipt_level == LogLevel.INFO:
+            self._log.info(receipt_log)
+        else:
+            self._log.debug(receipt_log)
 
         return reports
 
     async def generate_fill_reports(
         self,
-        instrument_id: InstrumentId | None = None,
-        venue_order_id: VenueOrderId | None = None,
-        start: pd.Timestamp | None = None,
-        end: pd.Timestamp | None = None,
+        command: GenerateFillReports,
     ) -> list[FillReport]:
         """
         Create an order fill report.
@@ -598,11 +609,11 @@ class DYDXExecutionClient(LiveExecutionClient):
         reports: list[FillReport] = []
 
         symbol = None
-        start_dt = start.to_pydatetime() if start is not None else None
-        end_dt = end.to_pydatetime() if end is not None else None
+        start_dt = command.start.to_pydatetime() if command.start is not None else None
+        end_dt = command.end.to_pydatetime() if command.end is not None else None
 
-        if instrument_id is not None:
-            symbol = instrument_id.symbol.value.removesuffix("-PERP")
+        if command.instrument_id is not None:
+            symbol = command.instrument_id.symbol.value.removesuffix("-PERP")
 
         dydx_fills = await self._http_account.get_fills(
             address=self._wallet_address,
@@ -658,9 +669,7 @@ class DYDXExecutionClient(LiveExecutionClient):
 
     async def generate_position_status_reports(
         self,
-        instrument_id: InstrumentId | None = None,
-        start: pd.Timestamp | None = None,
-        end: pd.Timestamp | None = None,
+        command: GeneratePositionStatusReports,
     ) -> list[PositionStatusReport]:
         """
         Generate position status reports.
@@ -675,11 +684,11 @@ class DYDXExecutionClient(LiveExecutionClient):
         )
 
         if dydx_positions is not None:
-            if instrument_id:
+            if command.instrument_id:
                 for dydx_position in dydx_positions.positions:
                     current_instrument_id = DYDXSymbol(dydx_position.market).to_instrument_id()
 
-                    if current_instrument_id == instrument_id:
+                    if current_instrument_id == command.instrument_id:
                         instrument = self._cache.instrument(current_instrument_id)
 
                         if instrument is None:
@@ -701,7 +710,7 @@ class DYDXExecutionClient(LiveExecutionClient):
                     now = self._clock.timestamp_ns()
                     report = PositionStatusReport(
                         account_id=self.account_id,
-                        instrument_id=instrument_id,
+                        instrument_id=command.instrument_id,
                         position_side=PositionSide.FLAT,
                         quantity=Quantity.zero(),
                         report_id=UUID4(),
@@ -737,32 +746,40 @@ class DYDXExecutionClient(LiveExecutionClient):
         self._log.info(f"Received {len(reports)} PositionStatusReport{plural}")
         return reports
 
-    def _handle_ws_message(self, raw: bytes) -> None:
+    def _handle_ws_message(self, raw: bytes) -> None:  # noqa: C901
         try:
             ws_message = self._decoder_ws_msg_general.decode(raw)
+            ws_message_channel = ws_message.channel
+            ws_message_type = ws_message.type
 
-            if ws_message.channel == "v4_block_height" and ws_message.type == "channel_data":
-                self._handle_block_height_channel_data(raw)
-            elif ws_message.channel == "v4_subaccounts" and ws_message.type == "channel_data":
-                self._handle_subaccounts_channel_data(raw)
-            elif ws_message.channel == "v4_markets" and ws_message.type == "channel_data":
-                self._handle_markets(raw)
-            elif ws_message.channel == "v4_block_height" and ws_message.type == "subscribed":
-                self._handle_block_height_subscribed(raw)
-            elif ws_message.channel == "v4_subaccounts" and ws_message.type == "subscribed":
-                self._handle_subaccounts_subscribed(raw)
-            elif ws_message.channel == "v4_markets" and ws_message.type == "subscribed":
-                self._handle_markets_subscribed(raw)
-            elif ws_message.type == "unsubscribed":
+            if ws_message_type == "channel_data":
+                if ws_message_channel == "v4_block_height":
+                    self._handle_block_height_channel_data(raw)
+                elif ws_message_channel == "v4_subaccounts":
+                    self._handle_subaccounts_channel_data(raw)
+                elif ws_message_channel == "v4_markets":
+                    self._handle_markets(raw)
+                else:
+                    self._log.error(f"Unknown message `{ws_message_type}`: {raw.decode()}")
+            elif ws_message_type == "subscribed":
+                if ws_message_channel == "v4_block_height":
+                    self._handle_block_height_subscribed(raw)
+                elif ws_message_channel == "v4_subaccounts":
+                    self._handle_subaccounts_subscribed(raw)
+                elif ws_message_channel == "v4_markets":
+                    self._handle_markets_subscribed(raw)
+                else:
+                    self._log.error(f"Unknown message `{ws_message_type}`: {raw.decode()}")
+            elif ws_message_type == "unsubscribed":
                 self._log.info(
-                    f"Unsubscribed from channel {ws_message.channel} for {ws_message.id}",
+                    f"Unsubscribed from channel {ws_message_channel} for {ws_message.id}",
                 )
-            elif ws_message.type == "connected":
+            elif ws_message_type == "connected":
                 self._log.info("Websocket connected")
             else:
-                self._log.error(f"Unknown message `{ws_message.type}`: {raw.decode()}")
+                self._log.error(f"Unknown message `{ws_message_type}`: {raw.decode()}")
         except Exception as e:
-            self._log.error(f"Failed to parse websocket message: {raw.decode()} with error {e}")
+            self._log.exception(f"Failed to parse websocket message: {raw.decode()}", e)
 
     def _handle_block_height_subscribed(self, raw: bytes) -> None:
         try:
@@ -772,8 +789,9 @@ class DYDXExecutionClient(LiveExecutionClient):
             self._block_height = int(msg.contents.height)
 
         except Exception as e:
-            self._log.error(
-                f"Failed to parse block height subscribed message: {raw.decode()} with error {e}",
+            self._log.exception(
+                f"Failed to parse block height subscribed message: {raw.decode()}",
+                e,
             )
 
     def _handle_block_height_channel_data(self, raw: bytes) -> None:
@@ -784,8 +802,9 @@ class DYDXExecutionClient(LiveExecutionClient):
             self._block_height = int(msg.contents.blockHeight)
 
         except Exception as e:
-            self._log.error(
-                f"Failed to parse block height channel message: {raw.decode()} with error {e}",
+            self._log.exception(
+                f"Failed to parse block height channel message: {raw.decode()}",
+                e,
             )
 
     def _handle_markets(self, raw: bytes) -> None:
@@ -798,7 +817,7 @@ class DYDXExecutionClient(LiveExecutionClient):
                     self._oracle_prices[instrument_id] = Decimal(oracle_price_market.oraclePrice)
 
         except Exception as e:
-            self._log.error(f"Failed to parse market data: {raw.decode()} with error {e}")
+            self._log.exception(f"Failed to parse market data: {raw.decode()}", e)
 
     def _handle_markets_subscribed(self, raw: bytes) -> None:
         try:
@@ -810,7 +829,7 @@ class DYDXExecutionClient(LiveExecutionClient):
                     self._oracle_prices[instrument_id] = Decimal(oracle_price_market.oraclePrice)
 
         except Exception as e:
-            self._log.error(f"Failed to parse market channel data: {raw.decode()} with error {e}")
+            self._log.exception(f"Failed to parse market channel data: {raw.decode()}", e)
 
     def _handle_subaccounts_subscribed(self, raw: bytes) -> None:
         try:
@@ -871,8 +890,9 @@ class DYDXExecutionClient(LiveExecutionClient):
             )
 
         except Exception as e:
-            self._log.error(
-                f"Failed to parse subaccounts subscribed message: {raw.decode()} with error {e}",
+            self._log.exception(
+                f"Failed to parse subaccounts subscribed message: {raw.decode()}",
+                e,
             )
 
     def _handle_subaccounts_channel_data(self, raw: bytes) -> None:
@@ -888,8 +908,9 @@ class DYDXExecutionClient(LiveExecutionClient):
                     self._handle_order_message(order_msg=order_msg)
 
         except Exception as e:
-            self._log.error(
-                f"Failed to parse subaccounts channel data: {raw.decode()} with error {e}",
+            self._log.exception(
+                f"Failed to parse subaccounts channel data: {raw.decode()}",
+                e,
             )
 
     def _handle_order_message(
@@ -1001,22 +1022,23 @@ class DYDXExecutionClient(LiveExecutionClient):
             else Money(Decimal(0), instrument.quote_currency)
         )
 
-        self.generate_order_filled(
-            strategy_id=order.strategy_id,
-            instrument_id=instrument_id,
-            client_order_id=client_order_id,
-            venue_order_id=venue_order_id,
-            venue_position_id=None,
-            trade_id=TradeId(fill_msg.id),
-            order_side=self._enum_parser.parse_dydx_order_side(fill_msg.side),
-            order_type=order.order_type,
-            last_qty=Quantity(Decimal(fill_msg.size), instrument.size_precision),
-            last_px=Price(Decimal(fill_msg.price), instrument.price_precision),
-            quote_currency=instrument.quote_currency,
-            commission=commission,
-            liquidity_side=self._enum_parser.parse_dydx_liquidity_side(fill_msg.liquidity),
-            ts_event=dt_to_unix_nanos(fill_msg.createdAt),
-        )
+        if order.status != OrderStatus.FILLED:
+            self.generate_order_filled(
+                strategy_id=order.strategy_id,
+                instrument_id=instrument_id,
+                client_order_id=client_order_id,
+                venue_order_id=venue_order_id,
+                venue_position_id=None,
+                trade_id=TradeId(fill_msg.id),
+                order_side=self._enum_parser.parse_dydx_order_side(fill_msg.side),
+                order_type=order.order_type,
+                last_qty=Quantity(Decimal(fill_msg.size), instrument.size_precision),
+                last_px=Price(Decimal(fill_msg.price), instrument.price_precision),
+                quote_currency=instrument.quote_currency,
+                commission=commission,
+                liquidity_side=self._enum_parser.parse_dydx_liquidity_side(fill_msg.liquidity),
+                ts_event=dt_to_unix_nanos(fill_msg.createdAt),
+            )
 
     def _get_order_builder(self, instrument: Instrument) -> OrderBuilder:
         """
@@ -1066,7 +1088,7 @@ class DYDXExecutionClient(LiveExecutionClient):
         for order in command.order_list.orders:
             await self._submit_order_single(order=order)
 
-    async def _submit_order_single(self, order: Order) -> None:
+    async def _submit_order_single(self, order: Order) -> None:  # noqa: C901
         """
         Submit a single order.
         """
@@ -1107,6 +1129,7 @@ class DYDXExecutionClient(LiveExecutionClient):
         order_flags = OrderFlags.SHORT_TERM
         good_til_date_secs: int | None = None
         good_til_block: int | None = None
+        execution = OrderExecution.DEFAULT
 
         if dydx_order_tags.is_short_term_order is False and order.order_type == OrderType.MARKET:
             rejection_reason = "Cannot submit order: long term market order not supported by dYdX"
@@ -1120,20 +1143,32 @@ class DYDXExecutionClient(LiveExecutionClient):
             return
 
         if dydx_order_tags.is_short_term_order:
+            order_flags = OrderFlags.SHORT_TERM
             good_til_block = self._block_height + dydx_order_tags.num_blocks_open
-
-        elif order.order_type in [OrderType.STOP_LIMIT, OrderType.STOP_MARKET]:
-            good_til_block = None
-            order_flags = OrderFlags.CONDITIONAL
-            good_til_date_secs = (
-                int(nanos_to_secs(order.expire_time_ns)) if order.expire_time_ns else None
-            )
-
         else:
             order_flags = OrderFlags.LONG_TERM
             good_til_date_secs = (
                 int(nanos_to_secs(order.expire_time_ns)) if order.expire_time_ns else None
             )
+
+        if order.order_type in [OrderType.STOP_LIMIT, OrderType.STOP_MARKET]:
+            order_flags = OrderFlags.CONDITIONAL
+            good_til_block = None
+            good_til_date_secs = (
+                int(nanos_to_secs(order.expire_time_ns)) if order.expire_time_ns else None
+            )
+
+            if order.order_type == OrderType.STOP_MARKET:
+                execution = OrderExecution.IOC
+
+            if order.is_post_only:
+                execution = OrderExecution.POST_ONLY
+
+            if order.time_in_force == TimeInForce.IOC:
+                execution = OrderExecution.IOC
+
+            if order.time_in_force == TimeInForce.FOK:
+                execution = OrderExecution.FOK
 
         order_id = order_builder.create_order_id(
             address=self._wallet_address,
@@ -1205,6 +1240,7 @@ class DYDXExecutionClient(LiveExecutionClient):
             good_til_block=good_til_block,
             good_til_block_time=good_til_date_secs,
             trigger_price=trigger_price,
+            execution=execution,
         )
 
         await self._place_order(order_msg=order_msg, order=order)
@@ -1223,7 +1259,8 @@ class DYDXExecutionClient(LiveExecutionClient):
             )
             return
 
-        async with self._retry_manager_pool as retry_manager:
+        retry_manager = await self._retry_manager_pool.acquire()
+        try:
             await retry_manager.run(
                 name="place_order",
                 details=[order.client_order_id],
@@ -1239,6 +1276,8 @@ class DYDXExecutionClient(LiveExecutionClient):
                     reason=retry_manager.message,
                     ts_event=self._clock.timestamp_ns(),
                 )
+        finally:
+            await self._retry_manager_pool.release(retry_manager)
 
     async def _submit_order(self, command: SubmitOrder) -> None:
         await self._submit_order_single(order=command.order)
@@ -1363,7 +1402,8 @@ class DYDXExecutionClient(LiveExecutionClient):
 
         # Execute batch cancel
         if order_batch_list:
-            async with self._retry_manager_pool as retry_manager:
+            retry_manager = await self._retry_manager_pool.acquire()
+            try:
                 await retry_manager.run(
                     name="batch_cancel_orders",
                     details=[order.client_order_id for order in orders],
@@ -1386,6 +1426,8 @@ class DYDXExecutionClient(LiveExecutionClient):
                             reason=retry_manager.message,
                             ts_event=self._clock.timestamp_ns(),
                         )
+            finally:
+                await self._retry_manager_pool.release(retry_manager)
 
     async def _cancel_order_single(
         self,
@@ -1491,7 +1533,8 @@ class DYDXExecutionClient(LiveExecutionClient):
             )
             return
 
-        async with self._retry_manager_pool as retry_manager:
+        retry_manager = await self._retry_manager_pool.acquire()
+        try:
             await retry_manager.run(
                 name="cancel_order",
                 details=[order.client_order_id, order.venue_order_id],
@@ -1511,3 +1554,5 @@ class DYDXExecutionClient(LiveExecutionClient):
                     reason=retry_manager.message,
                     ts_event=self._clock.timestamp_ns(),
                 )
+        finally:
+            await self._retry_manager_pool.release(retry_manager)

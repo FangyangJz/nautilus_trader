@@ -71,7 +71,7 @@ cpdef dt_to_unix_nanos(dt: pd.Timestamp):
 
     Parameters
     ----------
-    dt : pd.Timestamp
+    dt : pd.Timestamp | str | int
         The datetime to convert.
 
     Returns
@@ -136,6 +136,30 @@ cpdef str format_iso8601(datetime dt, bint nanos_precision = True):
         return cstr_to_pystr(unix_nanos_to_iso8601_cstr(dt.value))
     else:
         return cstr_to_pystr(unix_nanos_to_iso8601_millis_cstr(dt.value))
+
+
+cpdef str format_optional_iso8601(datetime dt, bint nanos_precision = True):
+    """
+    Format the given optional datetime as an ISO 8601 (RFC 3339) specification string.
+
+    If value is `None` then will return the string "None".
+
+    Parameters
+    ----------
+    dt : pd.Timestamp, optional
+        The datetime to format.
+    nanos_precision : bool, default True
+        If True, use nanosecond precision. If False, use millisecond precision.
+
+    Returns
+    -------
+    str
+
+    """
+    if dt is None:
+        return str(None)
+
+    return format_iso8601(dt, nanos_precision)
 
 
 cpdef maybe_unix_nanos_to_dt(nanos):

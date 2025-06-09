@@ -16,14 +16,15 @@
 import msgspec
 import pyarrow as pa
 
-from nautilus_trader.adapters.binance.common.types import BinanceBar
 from nautilus_trader.common.messages import ComponentStateChanged
 from nautilus_trader.common.messages import ShutdownSystem
 from nautilus_trader.common.messages import TradingStateChanged
 from nautilus_trader.core import nautilus_pyo3
 from nautilus_trader.model.data import Bar
+from nautilus_trader.model.data import IndexPriceUpdate
 from nautilus_trader.model.data import InstrumentClose
 from nautilus_trader.model.data import InstrumentStatus
+from nautilus_trader.model.data import MarkPriceUpdate
 from nautilus_trader.model.data import OrderBookDelta
 from nautilus_trader.model.data import OrderBookDepth10
 from nautilus_trader.model.data import QuoteTick
@@ -46,35 +47,51 @@ from nautilus_trader.model.events import OrderTriggered
 from nautilus_trader.model.events import OrderUpdated
 
 
+def infer_dtype(dtype_str: str) -> pa.DataType:
+    if dtype_str.startswith("FixedSizeBinary"):
+        return pa.binary(nautilus_pyo3.PRECISION_BYTES)
+    else:
+        return pa.type_for_alias(dtype_str)
+
+
 NAUTILUS_ARROW_SCHEMA = {
     OrderBookDelta: pa.schema(
         [
-            pa.field(k, pa.type_for_alias(v), False)
+            pa.field(k, infer_dtype(v), False)
             for k, v in nautilus_pyo3.OrderBookDelta.get_fields().items()
         ],
     ),
     OrderBookDepth10: pa.schema(
         [
-            pa.field(k, pa.type_for_alias(v), False)
+            pa.field(k, infer_dtype(v), False)
             for k, v in nautilus_pyo3.OrderBookDepth10.get_fields().items()
         ],
     ),
     QuoteTick: pa.schema(
         [
-            pa.field(k, pa.type_for_alias(v), False)
+            pa.field(k, infer_dtype(v), False)
             for k, v in nautilus_pyo3.QuoteTick.get_fields().items()
         ],
     ),
     TradeTick: pa.schema(
         [
-            pa.field(k, pa.type_for_alias(v), False)
+            pa.field(k, infer_dtype(v), False)
             for k, v in nautilus_pyo3.TradeTick.get_fields().items()
         ],
     ),
     Bar: pa.schema(
+        [pa.field(k, infer_dtype(v), False) for k, v in nautilus_pyo3.Bar.get_fields().items()],
+    ),
+    MarkPriceUpdate: pa.schema(
         [
-            pa.field(k, pa.type_for_alias(v), False)
-            for k, v in nautilus_pyo3.Bar.get_fields().items()
+            pa.field(k, infer_dtype(v), False)
+            for k, v in nautilus_pyo3.MarkPriceUpdate.get_fields().items()
+        ],
+    ),
+    IndexPriceUpdate: pa.schema(
+        [
+            pa.field(k, infer_dtype(v), False)
+            for k, v in nautilus_pyo3.IndexPriceUpdate.get_fields().items()
         ],
     ),
     InstrumentClose: pa.schema(
@@ -87,6 +104,12 @@ NAUTILUS_ARROW_SCHEMA = {
         },
         metadata={"type": "InstrumentClose"},
     ),
+    # InstrumentClose: pa.schema(  # TODO: Not implemented yet
+    #     [
+    #         pa.field(k, infer_dtype(v), False)
+    #         for k, v in nautilus_pyo3.InstrumentClose.get_fields().items()
+    #     ],
+    # ),
     InstrumentStatus: pa.schema(
         {
             "instrument_id": pa.dictionary(pa.int64(), pa.string()),
@@ -401,23 +424,6 @@ NAUTILUS_ARROW_SCHEMA = {
             "ts_init": pa.uint64(),
             "info": pa.binary(),
             "reconciliation": pa.bool_(),
-        },
-    ),
-    BinanceBar: pa.schema(
-        {
-            "bar_type": pa.dictionary(pa.int16(), pa.string()),
-            "instrument_id": pa.dictionary(pa.int64(), pa.string()),
-            "open": pa.string(),
-            "high": pa.string(),
-            "low": pa.string(),
-            "close": pa.string(),
-            "volume": pa.string(),
-            "quote_volume": pa.string(),
-            "count": pa.uint64(),
-            "taker_buy_base_volume": pa.string(),
-            "taker_buy_quote_volume": pa.string(),
-            "ts_event": pa.uint64(),
-            "ts_init": pa.uint64(),
         },
     ),
 }

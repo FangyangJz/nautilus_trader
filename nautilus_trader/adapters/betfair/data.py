@@ -14,8 +14,8 @@
 # -------------------------------------------------------------------------------------------------
 
 import asyncio
-from typing import Any
 
+from betfair_parser.exceptions import IdentityError
 from betfair_parser.spec.streaming import MCM
 from betfair_parser.spec.streaming import Connection
 from betfair_parser.spec.streaming import Status
@@ -34,10 +34,22 @@ from nautilus_trader.cache.cache import Cache
 from nautilus_trader.common.component import LiveClock
 from nautilus_trader.common.component import MessageBus
 from nautilus_trader.common.enums import LogColor
-from nautilus_trader.core.correctness import PyCondition
-from nautilus_trader.core.data import Data
+from nautilus_trader.data.messages import SubscribeInstrument
+from nautilus_trader.data.messages import SubscribeInstrumentClose
+from nautilus_trader.data.messages import SubscribeInstruments
+from nautilus_trader.data.messages import SubscribeInstrumentStatus
+from nautilus_trader.data.messages import SubscribeOrderBook
+from nautilus_trader.data.messages import SubscribeQuoteTicks
+from nautilus_trader.data.messages import SubscribeTradeTicks
+from nautilus_trader.data.messages import UnsubscribeBars
+from nautilus_trader.data.messages import UnsubscribeInstrument
+from nautilus_trader.data.messages import UnsubscribeInstrumentClose
+from nautilus_trader.data.messages import UnsubscribeInstruments
+from nautilus_trader.data.messages import UnsubscribeInstrumentStatus
+from nautilus_trader.data.messages import UnsubscribeOrderBook
+from nautilus_trader.data.messages import UnsubscribeQuoteTicks
+from nautilus_trader.data.messages import UnsubscribeTradeTicks
 from nautilus_trader.live.data_client import LiveMarketDataClient
-from nautilus_trader.model.enums import BookType
 from nautilus_trader.model.identifiers import ClientId
 from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.instruments.betting import BettingInstrument
@@ -165,7 +177,11 @@ class BetfairDataClient(LiveMarketDataClient):
             try:
                 await asyncio.sleep(self.config.keep_alive_secs)
                 self._log.info("Sending keep-alive")
-                await self._client.keep_alive()
+                try:
+                    await self._client.keep_alive()
+                except IdentityError:
+                    self._log.warning("Identity error during keep-alive, reconnecting")
+                    await self._reconnect()
             except asyncio.CancelledError:
                 self._log.debug("Canceled task 'keep_alive'")
                 return
@@ -201,96 +217,60 @@ class BetfairDataClient(LiveMarketDataClient):
     def _dispose(self) -> None:
         if self._stream.is_active():
             self._log.error("Cannot dispose a connected data client")
-            return
 
     # -- SUBSCRIPTIONS ----------------------------------------------------------------------------
-    async def _subscribe_order_book_deltas(
-        self,
-        instrument_id: InstrumentId,
-        book_type: BookType,
-        depth: int | None = None,
-        params: dict[str, Any] | None = None,
-    ) -> None:
-        self._log.info("Skipping subscribe_order_book_deltas, Betfair subscribes automatically.")
+    async def _subscribe_order_book_deltas(self, command: SubscribeOrderBook) -> None:
+        self._log.info("Skipping subscribe_order_book_deltas, Betfair subscribes automatically")
 
-    async def _subscribe_instrument(
-        self,
-        instrument_id: InstrumentId,
-        params: dict[str, Any] | None = None,
-    ) -> None:
-        self._log.info("Skipping subscribe_instrument, Betfair subscribes automatically.")
+    async def _subscribe_instrument(self, command: SubscribeInstrument) -> None:
+        self._log.info("Skipping subscribe_instrument, Betfair subscribes automatically")
 
-    async def _subscribe_quote_ticks(
-        self,
-        instrument_id: InstrumentId,
-        params: dict[str, Any] | None = None,
-    ) -> None:
-        self._log.info("Skipping subscribe_quote_ticks, Betfair subscribes automatically.")
+    async def _subscribe_quote_ticks(self, command: SubscribeQuoteTicks) -> None:
+        self._log.info("Skipping subscribe_quote_ticks, Betfair subscribes automatically")
 
-    async def _subscribe_trade_ticks(
-        self,
-        instrument_id: InstrumentId,
-        params: dict[str, Any] | None = None,
-    ) -> None:
-        self._log.info("Skipping subscribe_trade_ticks, Betfair subscribes automatically.")
+    async def _subscribe_trade_ticks(self, command: SubscribeTradeTicks) -> None:
+        self._log.info("Skipping subscribe_trade_ticks, Betfair subscribes automatically")
 
-    async def _subscribe_instruments(self, params: dict[str, Any] | None = None) -> None:
+    async def _subscribe_instruments(self, command: SubscribeInstruments) -> None:
         for instrument in self._instrument_provider.list_all():
             self._handle_data(instrument)
 
-    async def _subscribe_instrument_status(
-        self,
-        instrument_id: InstrumentId,
-        params: dict[str, Any] | None = None,
-    ) -> None:
+    async def _subscribe_instrument_status(self, command: SubscribeInstrumentStatus) -> None:
         pass  # Subscribed as part of orderbook
 
-    async def _subscribe_instrument_close(
-        self,
-        instrument_id: InstrumentId,
-        params: dict[str, Any] | None = None,
-    ) -> None:
+    async def _subscribe_instrument_close(self, command: SubscribeInstrumentClose) -> None:
         pass  # Subscribed as part of orderbook
 
-    async def _unsubscribe_order_book_snapshots(
-        self,
-        instrument_id: InstrumentId,
-        params: dict[str, Any] | None = None,
-    ) -> None:
+    async def _unsubscribe_order_book_snapshots(self, command: UnsubscribeOrderBook) -> None:
         # TODO - this could be done by removing the market from self.__subscribed_market_ids and resending the
         #  subscription message - when we have a use case
+        self._log.warning("Betfair does not support unsubscribing")
 
-        self._log.warning("Betfair does not support unsubscribing from instruments")
-
-    async def _unsubscribe_order_book_deltas(
-        self,
-        instrument_id: InstrumentId,
-        params: dict[str, Any] | None = None,
-    ) -> None:
+    async def _unsubscribe_order_book_deltas(self, command: UnsubscribeOrderBook) -> None:
         # TODO - this could be done by removing the market from self.__subscribed_market_ids and resending the
         #  subscription message - when we have a use case
-        self._log.warning("Betfair does not support unsubscribing from instruments")
+        self._log.warning("Betfair does not support unsubscribing")
 
-    async def _unsubscribe_instrument(
-        self,
-        instrument_id: InstrumentId,
-        params: dict[str, Any] | None = None,
-    ) -> None:
+    async def _unsubscribe_instrument(self, command: UnsubscribeInstrument) -> None:
         self._log.info("Skipping unsubscribe_instrument, not applicable for Betfair")
 
-    async def _unsubscribe_quote_ticks(
-        self,
-        instrument_id: InstrumentId,
-        params: dict[str, Any] | None = None,
-    ) -> None:
+    async def _unsubscribe_instruments(self, command: UnsubscribeInstruments) -> None:
+        self._log.info("Skipping unsubscribe_instrument, not applicable for Betfair")
+
+    async def _unsubscribe_instrument_status(self, command: UnsubscribeInstrumentStatus) -> None:
+        self._log.info("Skipping unsubscribe_instrument_status, not applicable for Betfair")
+
+    async def _unsubscribe_instrument_close(self, command: UnsubscribeInstrumentClose) -> None:
+        self._log.info("Skipping unsubscribe_instrument_status, not applicable for Betfair")
+
+    async def _unsubscribe_quote_ticks(self, command: UnsubscribeQuoteTicks) -> None:
         self._log.info("Skipping unsubscribe_quote_ticks, not applicable for Betfair")
 
-    async def _unsubscribe_trade_ticks(
-        self,
-        instrument_id: InstrumentId,
-        params: dict[str, Any] | None = None,
-    ) -> None:
+    async def _unsubscribe_trade_ticks(self, command: UnsubscribeTradeTicks) -> None:
         self._log.info("Skipping unsubscribe_trade_ticks, not applicable for Betfair")
+
+    async def _unsubscribe_bars(self, command: UnsubscribeBars) -> None:
+        self._log.info("Skipping unsubscribe_bars, not applicable for Betfair")
 
     # -- STREAMS ----------------------------------------------------------------------------------
 
@@ -314,7 +294,7 @@ class BetfairDataClient(LiveMarketDataClient):
         updates = self._parser.parse(mcm=mcm)
         for data in updates:
             self._log.debug(f"{data=}")
-            PyCondition.type(data, Data, "data")
+
             if isinstance(data, BettingInstrument):
                 self._on_instrument(data)
             else:

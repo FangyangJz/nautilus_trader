@@ -42,6 +42,7 @@ from nautilus_trader.core.rust.model cimport level_drop
 from nautilus_trader.core.rust.model cimport level_exposure
 from nautilus_trader.core.rust.model cimport level_orders
 from nautilus_trader.core.rust.model cimport level_price
+from nautilus_trader.core.rust.model cimport level_side
 from nautilus_trader.core.rust.model cimport level_size
 from nautilus_trader.core.rust.model cimport orderbook_add
 from nautilus_trader.core.rust.model cimport orderbook_apply_delta
@@ -58,7 +59,6 @@ from nautilus_trader.core.rust.model cimport orderbook_check_integrity
 from nautilus_trader.core.rust.model cimport orderbook_clear
 from nautilus_trader.core.rust.model cimport orderbook_clear_asks
 from nautilus_trader.core.rust.model cimport orderbook_clear_bids
-from nautilus_trader.core.rust.model cimport orderbook_count
 from nautilus_trader.core.rust.model cimport orderbook_delete
 from nautilus_trader.core.rust.model cimport orderbook_drop
 from nautilus_trader.core.rust.model cimport orderbook_get_avg_px_for_quantity
@@ -75,6 +75,7 @@ from nautilus_trader.core.rust.model cimport orderbook_simulate_fills
 from nautilus_trader.core.rust.model cimport orderbook_spread
 from nautilus_trader.core.rust.model cimport orderbook_ts_last
 from nautilus_trader.core.rust.model cimport orderbook_update
+from nautilus_trader.core.rust.model cimport orderbook_update_count
 from nautilus_trader.core.rust.model cimport orderbook_update_quote_tick
 from nautilus_trader.core.rust.model cimport orderbook_update_trade_tick
 from nautilus_trader.core.rust.model cimport vec_fills_drop
@@ -128,7 +129,7 @@ cdef class OrderBook(Data):
             f"instrument: {self.instrument_id}\n"
             f"sequence: {self.sequence}\n"
             f"ts_last: {self.ts_last}\n"
-            f"count: {self.count}\n"
+            f"update_count: {self.update_count}\n"
             f"{self.pprint()}"
         )
 
@@ -230,7 +231,7 @@ cdef class OrderBook(Data):
         return orderbook_ts_last(&self._mem)
 
     @property
-    def count(self) -> int:
+    def update_count(self) -> int:
         """
         Return the books update count.
 
@@ -239,7 +240,7 @@ cdef class OrderBook(Data):
         int
 
         """
-        return orderbook_count(&self._mem)
+        return orderbook_update_count(&self._mem)
 
     cpdef void reset(self):
         """
@@ -605,7 +606,7 @@ cdef class OrderBook(Data):
 
         return orderbook_get_quantity_for_price(&self._mem, price._mem, order_side)
 
-    cpdef list simulate_fills(self, Order order, uint8_t price_prec, bint is_aggressive):
+    cpdef list simulate_fills(self, Order order, uint8_t price_prec, uint8_t size_prec, bint is_aggressive):
         """
         Simulate filling the book with the given order.
 
@@ -615,8 +616,21 @@ cdef class OrderBook(Data):
             The order to simulate fills for.
         price_prec : uint8_t
             The price precision for the fills.
+        size_prec : uint8_t
+            The size precision for the fills (based on the instrument definition).
+        is_aggressive : bool
+            If the order is an aggressive liquidity taking order.
 
         """
+        Condition.not_none(order, "order")
+
+        if order.leaves_qty._mem.precision != size_prec:
+            raise RuntimeError(
+                f"Invalid size precision for order leaves quantity {order.leaves_qty._mem.precision} "
+                f"when instrument size precision is {size_prec}. "
+                f"Check order quantity precision matches the {order.instrument.id} instrument"
+            )
+
         cdef Price order_price
         cdef Price_t price
         price.precision = price_prec
@@ -647,6 +661,10 @@ cdef class OrderBook(Data):
             fill_price = Price.from_mem_c(raw_fill[0])
             fill_size = Quantity.from_mem_c(raw_fill[1])
             fills.append((fill_price, fill_size))
+            if fill_price.precision != price_prec:
+                raise RuntimeError(f"{fill_price.precision=} did not match instrument {price_prec=}")
+            if fill_size.precision != size_prec:
+                raise RuntimeError(f"{fill_size.precision=} did not match instrument {size_prec=}")
 
         vec_fills_drop(raw_fills_vec)
 
@@ -761,6 +779,19 @@ cdef class BookLevel:
         return f"BookLevel(price={self.price}, orders={self.orders()})"
 
     @property
+    def side(self) -> OrderSide:
+        """
+        Return the side for the level.
+
+        Returns
+        -------
+        OrderSide
+
+        """
+        return <OrderSide>level_side(&self._mem)
+
+
+    @property
     def price(self) -> Price:
         """
         Return the price for the level.
@@ -822,3 +853,7 @@ cdef class BookLevel:
 
         """
         return level_exposure(&self._mem)
+
+
+def py_should_handle_own_book_order(Order order) -> bool:
+    return should_handle_own_book_order(order)

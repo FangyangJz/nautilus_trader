@@ -22,8 +22,7 @@ includes sending commands to, and receiving events from, the trading venue
 endpoints via its registered execution clients.
 
 The engine employs a simple fan-in fan-out messaging pattern to execute
-`TradingCommand` messages, and process `AccountState` or `OrderEvent` type
-messages.
+`TradingCommand` messages and `OrderEvent` messages.
 
 Alternative implementations can be written on top of the generic engine - which
 just need to override the `execute` and `process` methods.
@@ -33,6 +32,7 @@ import time
 from decimal import Decimal
 
 from nautilus_trader.common.config import InvalidConfiguration
+from nautilus_trader.core import nautilus_pyo3
 from nautilus_trader.execution.config import ExecEngineConfig
 from nautilus_trader.execution.reports import ExecutionMassStatus
 from nautilus_trader.execution.reports import ExecutionReport
@@ -47,7 +47,6 @@ from nautilus_trader.common.component cimport RECV
 from nautilus_trader.common.component cimport Clock
 from nautilus_trader.common.component cimport Component
 from nautilus_trader.common.component cimport LogColor
-from nautilus_trader.common.component cimport Logger
 from nautilus_trader.common.component cimport MessageBus
 from nautilus_trader.common.component cimport TimeEvent
 from nautilus_trader.common.generators cimport PositionIdGenerator
@@ -56,17 +55,19 @@ from nautilus_trader.core.fsm cimport InvalidStateTrigger
 from nautilus_trader.core.rust.core cimport secs_to_nanos
 from nautilus_trader.core.rust.model cimport ContingencyType
 from nautilus_trader.core.rust.model cimport OmsType
+from nautilus_trader.core.rust.model cimport OrderSide
 from nautilus_trader.core.rust.model cimport PositionSide
 from nautilus_trader.core.uuid cimport UUID4
-from nautilus_trader.execution.algorithm cimport ExecAlgorithm
 from nautilus_trader.execution.client cimport ExecutionClient
 from nautilus_trader.execution.messages cimport BatchCancelOrders
 from nautilus_trader.execution.messages cimport CancelAllOrders
 from nautilus_trader.execution.messages cimport CancelOrder
 from nautilus_trader.execution.messages cimport ModifyOrder
+from nautilus_trader.execution.messages cimport QueryOrder
 from nautilus_trader.execution.messages cimport SubmitOrder
 from nautilus_trader.execution.messages cimport SubmitOrderList
 from nautilus_trader.execution.messages cimport TradingCommand
+from nautilus_trader.model.book cimport should_handle_own_book_order
 from nautilus_trader.model.data cimport QuoteTick
 from nautilus_trader.model.data cimport TradeTick
 from nautilus_trader.model.events.order cimport OrderDenied
@@ -85,11 +86,11 @@ from nautilus_trader.model.identifiers cimport PositionId
 from nautilus_trader.model.identifiers cimport StrategyId
 from nautilus_trader.model.identifiers cimport Venue
 from nautilus_trader.model.instruments.base cimport Instrument
-from nautilus_trader.model.instruments.currency_pair cimport CurrencyPair
 from nautilus_trader.model.objects cimport Money
 from nautilus_trader.model.objects cimport Price
 from nautilus_trader.model.objects cimport Quantity
 from nautilus_trader.model.orders.base cimport Order
+from nautilus_trader.trading.strategy cimport Strategy
 
 
 cdef class ExecutionEngine(Component):
@@ -145,8 +146,11 @@ cdef class ExecutionEngine(Component):
             clock=clock,
         )
 
+        self._pending_position_events: list[PositionEvent] = []
+
         # Configuration
         self.debug: bool = config.debug
+        self.manage_own_order_books = config.manage_own_order_books
         self.snapshot_orders = config.snapshot_orders
         self.snapshot_positions = config.snapshot_positions
         self.snapshot_positions_interval_secs = config.snapshot_positions_interval_secs or 0
@@ -307,9 +311,9 @@ cdef class ExecutionEngine(Component):
 
         return self._external_order_claims.get(instrument_id)
 
-    cpdef set get_external_order_claims_instruments(self):
+    cpdef set[InstrumentId] get_external_order_claims_instruments(self):
         """
-        Get all external order claims instrument IDs.
+        Get all instrument IDs registered for external order claims.
 
         Returns
         -------
@@ -320,16 +324,16 @@ cdef class ExecutionEngine(Component):
 
     cpdef set[ExecutionClient] get_clients_for_orders(self, list[Order] orders):
         """
-        Get all execution clients for the given orders.
+        Get all execution clients corresponding to the given orders.
 
         Parameters
         ----------
-        order : list[Order]
-            The orders for the execution clients.
+        orders : list[Order]
+            The orders to locate associated execution clients for.
 
         Returns
         -------
-        list[ExecutionClient]
+        set[ExecutionClient]
 
         """
         Condition.not_none(orders, "orders")
@@ -342,7 +346,6 @@ cdef class ExecutionEngine(Component):
             ClientId client_id
             Venue venue
             ExecutionClient client
-
         for order in orders:
             venues.add(order.venue)
             client_id = self._cache.client_id(order.client_order_id)
@@ -357,9 +360,22 @@ cdef class ExecutionEngine(Component):
 
         for venue in venues:
             client = self._routing_map.get(venue, self._default_client)
-            clients.add(client)
+            if client is not None:
+                clients.add(client)
 
         return clients
+
+    cpdef void set_manage_own_order_books(self, bint value):
+        """
+        Set the `manage_own_order_books` setting with the given `value`.
+
+        Parameters
+        ----------
+        value : bool
+            The value to set.
+
+        """
+        self.manage_own_order_books = value
 
 # -- REGISTRATION ---------------------------------------------------------------------------------
 
@@ -384,15 +400,29 @@ cdef class ExecutionEngine(Component):
         Condition.not_none(client, "client")
         Condition.not_in(client.id, self._clients, "client.id", "_clients")
 
-        self._clients[client.id] = client
+        cdef str routing_log = ""
 
-        routing_log = ""
+        # Default routing client
         if client.venue is None:
-            if self._default_client is None:
-                self._default_client = client
-                routing_log = " for default routing"
+            if self._default_client is not None:
+                raise ValueError(
+                    f"Default execution client already registered ("
+                    f"{self._default_client.id!r}); use register_default_client to override"
+                )
+            self._default_client = client
+            routing_log = " for default routing"
+        # Venue-specific routing
         else:
+            if client.venue in self._routing_map:
+                existing = self._routing_map[client.venue]
+                raise ValueError(
+                    f"Execution client for venue {client.venue!r} "
+                    f"already registered ({existing.id!r})"
+                )
             self._routing_map[client.venue] = client
+
+        # Finally register in client registry
+        self._clients[client.id] = client
 
         self._log.info(f"Registered ExecutionClient-{client}{routing_log}")
 
@@ -511,13 +541,20 @@ cdef class ExecutionEngine(Component):
         Condition.not_none(client, "client")
         Condition.is_in(client.id, self._clients, "client.id", "self._clients")
 
+        # Remove client from registry
         del self._clients[client.id]
 
-        if client.venue is None:
-            if self._default_client == client:
-                self._default_client = None
-        else:
-            del self._routing_map[client.venue]
+        # Clear default routing client if it matches
+        if self._default_client is not None and self._default_client == client:
+            self._default_client = None
+
+        # Remove any venue-specific routing entries for this client
+        cdef list to_remove = []
+        for venue, mapped_client in self._routing_map.items():
+            if mapped_client == client:
+                to_remove.append(venue)
+        for venue in to_remove:
+            del self._routing_map[venue]
 
         self._log.info(f"Deregistered {client}")
 
@@ -643,7 +680,10 @@ cdef class ExecutionEngine(Component):
         """
         Load the cache up from the execution database.
         """
+        # Manually measuring timestamps in case the engine is using a test clock
         cdef uint64_t ts = int(time.time() * 1000)
+
+        self._cache.clear_index()
 
         self._cache.cache_general()
         self._cache.cache_currencies()
@@ -653,9 +693,18 @@ cdef class ExecutionEngine(Component):
         self._cache.cache_order_lists()
         self._cache.cache_positions()
 
+        # TODO: Uncomment and replace above individual caching methods once implemented
+        # self._cache.cache_all()
         self._cache.build_index()
         self._cache.check_integrity()
         self._set_position_id_counts()
+
+        cdef Order order
+        if self.manage_own_order_books:
+            for order in self._cache.orders():
+                if order.is_closed_c() or not should_handle_own_book_order(order):
+                    continue
+                self._add_own_book_order(order)
 
         self._log.info(f"Loaded cache in {(int(time.time() * 1000) - ts)}ms")
 
@@ -782,14 +831,30 @@ cdef class ExecutionEngine(Component):
             ts_init=self._clock.timestamp_ns(),
         )
         order.apply(denied)
-
         self._cache.update_order(order)
+
         self._msgbus.publish_c(
             topic=f"events.order.{order.strategy_id}",
             msg=denied,
         )
         if self.snapshot_orders:
             self._create_order_state_snapshot(order)
+
+    cpdef object _get_or_init_own_order_book(self, InstrumentId instrument_id):
+        own_book = self._cache.own_order_book(instrument_id)
+        if own_book is None:
+            pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(instrument_id.value)
+            own_book = nautilus_pyo3.OwnOrderBook(pyo3_instrument_id)
+            self._cache.add_own_order_book(own_book)
+            self._log.debug(f"Initialized {own_book!r}", LogColor.MAGENTA)
+        return own_book
+
+    cpdef void _add_own_book_order(self, Order order):
+        own_book = self._get_or_init_own_order_book(order.instrument_id)
+        own_book_order = order.to_own_book_order()
+        own_book.add(own_book_order)
+        if self.debug:
+            self._log.debug(f"Added: {own_book_order!r}", LogColor.MAGENTA)
 
 # -- COMMAND HANDLERS -----------------------------------------------------------------------------
 
@@ -858,6 +923,9 @@ cdef class ExecutionEngine(Component):
             base_qty = instrument.calculate_base_quantity(order.quantity, last_px)
             self._set_order_base_qty(order, base_qty)
 
+        if self.manage_own_order_books and should_handle_own_book_order(order):
+            self._add_own_book_order(order)
+
         # Send to execution client
         client.submit_order(command)
 
@@ -895,6 +963,11 @@ cdef class ExecutionEngine(Component):
                     return  # Denied
                 base_qty = instrument.calculate_base_quantity(quote_qty, last_px)
                 self._set_order_base_qty(order, base_qty)
+
+        if self.manage_own_order_books:
+            for order in command.order_list.orders:
+                if should_handle_own_book_order(order):
+                    self._add_own_book_order(order)
 
         # Send to execution client
         client.submit_order_list(command)
@@ -973,6 +1046,25 @@ cdef class ExecutionEngine(Component):
             self._handle_order_fill(order, event, oms_type)
         else:
             self._apply_event_to_order(order, event)
+
+        # Pop position events which are pending publishing to prevent recursion issues
+        cdef list[PositionEvent] to_publish = self._pending_position_events
+        self._pending_position_events = []
+
+        # Publish events
+        self._msgbus.publish_c(
+            topic=f"events.order.{event.strategy_id}",
+            msg=event,
+        )
+
+        cdef:
+            PositionEvent pos_event
+            Position position
+        for pos_event in to_publish:
+            self._msgbus.publish_c(
+                topic=f"events.position.{pos_event.strategy_id}",
+                msg=pos_event,
+            )
 
     cpdef OmsType _determine_oms_type(self, OrderFilled fill):
         cdef ExecutionClient client
@@ -1089,15 +1181,18 @@ cdef class ExecutionEngine(Component):
             # ValueError: Protection against invalid IDs
             # KeyError: Protection against duplicate fills
             self._log.exception(f"Error on applying {event!r} to {order!r}", e)
+            if should_handle_own_book_order(order):
+                self._cache.update_own_order_book(order)
             return
 
         self._cache.update_order(order)
-        self._msgbus.publish_c(
-            topic=f"events.order.{event.strategy_id}",
-            msg=event,
-        )
         if self.snapshot_orders:
             self._create_order_state_snapshot(order)
+
+        self._msgbus.send(
+            endpoint="Portfolio.update_order",
+            msg=event,
+        )
 
     cpdef void _handle_order_fill(self, Order order, OrderFilled fill, OmsType oms_type):
         cdef Instrument instrument = self._cache.load_instrument(fill.instrument_id)
@@ -1143,8 +1238,6 @@ cdef class ExecutionEngine(Component):
         if position is None:
             position = Position(instrument, fill)
             self._cache.add_position(position, oms_type)
-            if self.snapshot_positions:
-                self._create_position_state_snapshot(position)
         else:
             try:
                 # Always snapshot opening positions to handle NETTING OMS
@@ -1163,8 +1256,13 @@ cdef class ExecutionEngine(Component):
             ts_init=self._clock.timestamp_ns(),
         )
 
-        self._msgbus.publish_c(
-            topic=f"events.position.{event.strategy_id}",
+        self._pending_position_events.append(event)
+
+        if self.snapshot_positions:
+            self._create_position_state_snapshot(position, open_only=True)
+
+        self._msgbus.send(
+            endpoint="Portfolio.update_position",
             msg=event,
         )
 
@@ -1179,8 +1277,6 @@ cdef class ExecutionEngine(Component):
             return  # Not re-raising to avoid crashing engine
 
         self._cache.update_position(position)
-        if self.snapshot_positions:
-            self._create_position_state_snapshot(position)
 
         cdef PositionEvent event
         if position.is_closed_c():
@@ -1198,8 +1294,13 @@ cdef class ExecutionEngine(Component):
                 ts_init=self._clock.timestamp_ns(),
             )
 
-        self._msgbus.publish_c(
-            topic=f"events.position.{event.strategy_id}",
+        self._pending_position_events.append(event)
+
+        if self.snapshot_positions:
+            self._create_position_state_snapshot(position, open_only=False)
+
+        self._msgbus.send(
+            endpoint="Portfolio.update_position",
             msg=event,
         )
 
@@ -1309,16 +1410,19 @@ cdef class ExecutionEngine(Component):
                 msg=self._msgbus.serializer.serialize(order.to_dict())
             )
 
-    cpdef void _create_position_state_snapshot(self, Position position):
+    cpdef void _create_position_state_snapshot(self, Position position, bint open_only):
         if self.debug:
             self._log.debug(f"Creating position state snapshot for {position}", LogColor.MAGENTA)
+
+        cdef uint64_t ts_snapshot = self._clock.timestamp_ns()
 
         cdef Money unrealized_pnl = self._cache.calculate_unrealized_pnl(position)
         cdef dict[str, object] position_state = position.to_dict()
         if unrealized_pnl is not None:
             position_state["unrealized_pnl"] = str(unrealized_pnl)
 
-        # TODO: Experimental internal message bus publishing
+        position_state["ts_snapshot"] = ts_snapshot
+
         self._msgbus.publish_c(
             topic=f"snapshots.positions.{position.id}",
             msg=position_state,
@@ -1328,8 +1432,9 @@ cdef class ExecutionEngine(Component):
         if self._cache.has_backing:
             self._cache.snapshot_position_state(
                 position,
-                position.ts_last,
+                ts_snapshot,
                 unrealized_pnl,
+                open_only,
             )
 
         if self._msgbus.has_backing and self._msgbus.serializer is not None:
@@ -1341,4 +1446,4 @@ cdef class ExecutionEngine(Component):
     cpdef void _snapshot_open_position_states(self, TimeEvent event):
         cdef Position position
         for position in self._cache.positions_open():
-            self._create_position_state_snapshot(position)
+            self._create_position_state_snapshot(position, open_only=True)

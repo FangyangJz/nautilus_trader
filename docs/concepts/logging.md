@@ -7,6 +7,7 @@ The core logger operates in a separate thread and uses a multi-producer single-c
 This design ensures that the main thread remains performant, avoiding potential bottlenecks caused by log string formatting or file I/O operations.
 
 Logging output is configurable and supports:
+
 - **stdout/stderr writer** for console output
 - **file writer** for persistent storage of logs
 
@@ -19,51 +20,97 @@ Infrastructure such as [Vector](https://github.com/vectordotdev/vector) can be i
 Logging can be configured by importing the `LoggingConfig` object.
 By default, log events with an 'INFO' `LogLevel` and higher are written to stdout/stderr.
 
-Log level (`LogLevel`) values include (and generally match Rusts `tracing` level filters):
+Log level (`LogLevel`) values include (and generally match Rust's `tracing` level filters).
+
+Python loggers expose the following levels:
+
 - `OFF`
 - `DEBUG`
 - `INFO`
-- `WARNING` or `WARN`
+- `WARNING`
 - `ERROR`
 
-:::info
-See the `LoggingConfig` [API Reference](../api_reference/config.md) for further details.
+:::warning
+The Python `Logger` does not provide a `trace()` method; `TRACE` level logs are only emitted by the underlying Rust components and cannot be generated directly from Python code.
+
+See the `LoggingConfig` [API Reference](../api_reference/config.md#class-loggingconfig) for further details.
 :::
 
 Logging can be configured in the following ways:
+
 - Minimum `LogLevel` for stdout/stderr
 - Minimum `LogLevel` for log files
-- Automatic log file naming and daily rotation, or custom log file name
+- Maximum size before rotating a log file
+- Maximum number of backup log files to maintain when rotating
+- Automatic log file naming with date or timestamp components, or custom log file name
 - Directory for writing log files
 - Plain text or JSON log file formatting
 - Filtering of individual components by log level
 - ANSI colors in log lines
 - Bypass logging entirely
 - Print Rust config to stdout at initialization
+- Optionally initialize logging via the PyO3 bridge (`use_pyo3`) to capture log events emitted by Rust components
+- Truncate existing log file on startup if it already exists (`clear_log_file`)
 
 ### Standard output logging
+
 Log messages are written to the console via stdout/stderr writers. The minimum log level can be configured using the `log_level` parameter.
 
 ### File logging
 
-Log files are written to the current working directory with daily rotation (UTC) by default.
+Log files are written to the current working directory by default. The naming convention and rotation behavior are configurable and follow specific patterns based on your settings.
 
-The default naming convention is as follows:
-- Trader ID
-- ISO 8601 datetime
-- Instance ID
-- The log format suffix
+You can specify a custom log directory using `log_directory` and/or a custom file basename using `log_file_name`. Log files are always suffixed with `.log` (plain text) or `.json` (JSON).
 
-```
-{trader_id}_{%Y-%m-%d}_{instance_id}.{log | json}`
-```
+For detailed information about log file naming conventions and rotation behavior, see the [Log file rotation](#log-file-rotation) and [Log file naming convention](#log-file-naming-convention) sections below.
 
-e.g. `TESTER-001_2023-03-23_635a4539-4fe2-4cb1-9be3-3079ba8d879e.json`
+#### Log file rotation
 
-You can specify a custom log directory path using the `log_directory` parameter and/or a custom log file basename using the `log_file_name` parameter.
-The log files will always be suffixed with '.log' for plain text, or '.json' for JSON (no need to include a suffix in file names).
+Rotation behavior depends on both the presence of a size limit and whether a custom file name is provided:
 
-If the log file already exists, it will be appended to.
+- **Size-based rotation**:
+  - Enabled by specifying the `log_file_max_size` parameter (e.g., `100_000_000` for 100 MB).
+  - When writing a log entry would make the current file exceed this size, the file is closed and a new one is created.
+- **Date-based rotation (default naming only)**:
+  - Applies when no `log_file_max_size` is specified and no custom `log_file_name` is provided.
+  - At each UTC date change (midnight), the current log file is closed and a new one is started, creating one file per UTC day.
+- **No rotation**:
+  - When a custom `log_file_name` is provided without a `log_file_max_size`, logs continue to append to the same file.
+- **Backup file management**:
+  - Controlled by the `log_file_max_backup_count` parameter (default: 5), limiting the total number of rotated files kept.
+  - When this limit is exceeded, the oldest backup files are automatically removed.
+
+#### Log file naming convention
+
+The default naming convention ensures log files are uniquely identifiable and timestamped.
+The format depends on whether file rotation is enabled:
+
+**With file rotation enabled**:
+
+- **Format**: `{trader_id}_{%Y-%m-%d_%H%M%S:%3f}_{instance_id}.{log|json}`
+- **Example**: `TESTER-001_2025-04-09_210721:521_d7dc12c8-7008-4042-8ac4-017c3db0fc38.log`
+- **Components**:
+  - `{trader_id}`: The trader identifier (e.g., `TESTER-001`).
+  - `{%Y-%m-%d_%H%M%S:%3f}`: Full ISO 8601-compliant datetime with millisecond resolution.
+  - `{instance_id}`: A unique instance identifier.
+  - `{log|json}`: File suffix based on format setting.
+
+**With file rotation disabled**:
+
+- **Format**: `{trader_id}_{%Y-%m-%d}_{instance_id}.{log|json}`
+- **Example**: `TESTER-001_2025-04-09_d7dc12c8-7008-4042-8ac4-017c3db0fc38.log`
+- **Components**:
+  - `{trader_id}`: The trader identifier.
+  - `{%Y-%m-%d}`: Date only (YYYY-MM-DD).
+  - `{instance_id}`: A unique instance identifier.
+  - `{log|json}`: File suffix based on format setting.
+
+**Custom naming**:
+
+If `log_file_name` is set (e.g., `my_custom_log`):
+
+- With rotation disabled: The file will be named exactly as provided (e.g., `my_custom_log.log`).
+- With rotation enabled: The file will include the custom name and timestamp (e.g., `my_custom_log_2025-04-09_210721:521.log`).
 
 ### Component log filtering
 
@@ -107,6 +154,7 @@ It's possible to use `Logger` objects directly, and these can be initialized any
 
 If you ***aren't*** using an object which already initializes a `NautilusKernel` (and logging) such as `BacktestEngine` or `TradingNode`,
 then you can activate logging in the following way:
+
 ```python
 from nautilus_trader.common.component import init_logging
 from nautilus_trader.common.component import Logger

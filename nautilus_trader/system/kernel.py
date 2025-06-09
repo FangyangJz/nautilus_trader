@@ -177,22 +177,22 @@ class NautilusKernel:
         self._log_guard: nautilus_pyo3.LogGuard | LogGuard | None = None
         logging: LoggingConfig = config.logging or LoggingConfig()
 
+        if logging.clear_log_file and logging.log_directory and logging.log_file_name:
+            file_path = Path(
+                logging.log_directory,
+                f"{logging.log_file_name}.{'log' if logging.log_file_format is None else 'json'}",
+            )
+
+            if file_path.exists():
+                # Truncate log file to zero length and reset metadata
+                file_path.touch()
+                file_path.open("w").close()
+
         if not is_logging_initialized():
             if "RUST_LOG" not in os.environ:
                 os.environ["RUST_LOG"] = "off"
 
             if not logging.bypass_logging:
-                if logging.clear_log_file and logging.log_directory and logging.log_file_name:
-                    file_path = Path(
-                        logging.log_directory,
-                        f"{logging.log_file_name}.{'log' if logging.log_file_format is None else 'json'}",
-                    )
-
-                    if file_path.exists():
-                        # Truncate log file to zero length and reset metadata
-                        file_path.touch()
-                        file_path.open("w").close()
-
                 if logging.use_pyo3:
                     set_logging_pyo3(True)
 
@@ -208,6 +208,11 @@ class NautilusKernel:
                         directory=logging.log_directory,
                         file_name=logging.log_file_name,
                         file_format=logging.log_file_format,
+                        file_rotate=(
+                            (logging.log_file_max_size, logging.log_file_max_backup_count)
+                            if logging.log_file_max_size
+                            else None
+                        ),
                         is_colored=logging.log_colors,
                         is_bypassed=logging.bypass_logging,
                         print_config=logging.print_config,
@@ -237,6 +242,8 @@ class NautilusKernel:
                         colors=logging.log_colors,
                         bypass=logging.bypass_logging,
                         print_config=logging.print_config,
+                        max_file_size=logging.log_file_max_size or 0,
+                        max_backup_count=logging.log_file_max_backup_count,
                     )
                     log_header(
                         trader_id=self._trader_id,
@@ -259,7 +266,7 @@ class NautilusKernel:
             self._loop = loop or asyncio.get_running_loop()
             if loop is not None:
                 self._executor = concurrent.futures.ThreadPoolExecutor()
-                self._loop.set_default_executor(self.executor)
+                self._loop.set_default_executor(self._executor)
                 self._loop.set_debug(config.loop_debug)
                 self._loop_sig_callback = loop_sig_callback
                 if platform.system() != "Windows":
@@ -313,6 +320,7 @@ class NautilusKernel:
         # Core components
         ########################################################################
         self._msgbus_serializer = None
+
         if config.message_bus:
             encoding = config.message_bus.encoding.lower()
             self._msgbus_serializer = MsgSpecSerializer(
@@ -320,6 +328,10 @@ class NautilusKernel:
                 timestamps_as_str=True,  # Hard-coded for now
                 timestamps_as_iso8601=config.message_bus.timestamps_as_iso8601,
             )
+
+        if self._msgbus_serializer is None:
+            self._msgbus_serializer = MsgSpecSerializer(encoding=msgspec.json)
+
         self._msgbus = MessageBus(
             trader_id=self._trader_id,
             instance_id=self._instance_id,
@@ -340,9 +352,7 @@ class NautilusKernel:
             msgbus=self._msgbus,
             cache=self._cache,
             clock=self._clock,
-            portfolio_bar_updates=(
-                (config.exec_engine and config.exec_engine.portfolio_bar_updates) or True
-            ),
+            config=config.portfolio,
         )
 
         ########################################################################
@@ -458,6 +468,7 @@ class NautilusKernel:
             risk_engine=self._risk_engine,
             exec_engine=self._exec_engine,
             clock=self._clock,
+            environment=self._environment,
             has_controller=self._config.controller is not None,
             loop=self._loop,
         )
@@ -472,13 +483,7 @@ class NautilusKernel:
                 config=self._config.controller,
                 trader=self._trader,
             )
-            assert self._controller is not None  # Type checking
-            self._controller.register_base(
-                portfolio=self._portfolio,
-                msgbus=self._msgbus,
-                cache=self._cache,
-                clock=self._clock,
-            )
+            self._trader.add_actor(self._controller)
 
         # Set up stream writer
         self._writer: StreamingFeatherWriter | None = None
@@ -522,6 +527,7 @@ class NautilusKernel:
 
         # State flags
         self._is_running = False
+        self._is_stopping = False
 
         build_time_ms = nanos_to_millis(time.time_ns() - ts_build)
         self._log.info(f"Initialized in {build_time_ms}ms")
@@ -591,6 +597,9 @@ class NautilusKernel:
         if not self._is_running:
             self._log.warning(f"Received {command!r} when not running")
             return
+
+        if self._is_stopping:
+            return  # Already stopping
 
         self._log.info(f"Received {command!r}, shutting down...", LogColor.BLUE)
 
@@ -965,9 +974,6 @@ class NautilusKernel:
         self._initialize_portfolio()
         self._trader.start()
 
-        if self._controller:
-            self._controller.start()
-
     async def start_async(self) -> None:
         """
         Start the Nautilus system kernel in an asynchronous context with an event loop.
@@ -1003,19 +1009,14 @@ class NautilusKernel:
 
         self._trader.start()
 
-        if self._controller:
-            self._controller.start()
-
     def stop(self) -> None:
         """
         Stop the Nautilus system kernel.
         """
         self._log.info("STOPPING")
+        self._is_stopping = True
 
         self._stop_clients()
-
-        if self._controller:
-            self._controller.stop()
 
         if self._trader.is_running:
             self._trader.stop()
@@ -1031,6 +1032,7 @@ class NautilusKernel:
 
         self._log.info("STOPPED")
         self._is_running = False
+        self._is_stopping = False
         self._ts_shutdown = self._clock.timestamp_ns()
 
     async def stop_async(self) -> None:
@@ -1051,6 +1053,7 @@ class NautilusKernel:
             raise RuntimeError("no event loop has been assigned to the kernel")
 
         self._log.info("STOPPING")
+        self._is_stopping = True
 
         if self._trader.is_running:
             self._trader.stop()
@@ -1070,6 +1073,7 @@ class NautilusKernel:
 
         self._log.info("STOPPED")
         self._is_running = False
+        self._is_stopping = False
         self._ts_shutdown = self._clock.timestamp_ns()
 
     def dispose(self) -> None:
@@ -1176,10 +1180,7 @@ class NautilusKernel:
                     except asyncio.CancelledError:
                         pass  # This is expected for cancelled tasks
             except Exception as e:
-                self._log.error(
-                    f"Error during task cleanup: {e}",
-                    exc_info=True,
-                )
+                self._log.exception("Error during task cleanup", e)
 
         if self.loop.is_running():
             # If the loop is already running, schedule the cleanup and run asynchronously

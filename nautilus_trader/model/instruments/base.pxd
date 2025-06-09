@@ -35,6 +35,7 @@ cdef class Instrument(Data):
     cdef TickScheme _tick_scheme
     cdef uint8_t _min_price_increment_precision
     cdef uint8_t _min_size_increment_precision
+    cdef double _increment_pow10
 
     cdef readonly InstrumentId id
     """The instrument ID.\n\n:returns: `InstrumentId`"""
@@ -47,7 +48,7 @@ cdef class Instrument(Data):
     cdef readonly Currency quote_currency
     """The quote currency for the instrument.\n\n:returns: `Currency`"""
     cdef readonly bint is_inverse
-    """If the quantity is expressed in quote currency.\n\n:returns: `Currency`"""
+    """If the quantity is expressed in quote currency.\n\n:returns: `bool`"""
     cdef readonly int price_precision
     """The price precision of the instrument.\n\n:returns: `int`"""
     cdef readonly int size_precision
@@ -97,10 +98,13 @@ cdef class Instrument(Data):
 
     cpdef Currency get_base_currency(self)
     cpdef Currency get_settlement_currency(self)
+    cpdef Currency get_cost_currency(self)
     cpdef Price make_price(self, value)
     cpdef Price next_bid_price(self, double value, int num_ticks=*)
     cpdef Price next_ask_price(self, double value, int num_ticks=*)
-    cpdef Quantity make_qty(self, value)
+    cpdef list next_bid_prices(self, double value, int num_ticks=*)
+    cpdef list next_ask_prices(self, double value, int num_ticks=*)
+    cpdef Quantity make_qty(self, value, bint round_down=*)
     cpdef Money notional_value(self, Quantity quantity, Price price, bint use_quote_for_inverse=*)
     cpdef Quantity calculate_base_quantity(self, Quantity quantity, Price last_px)
 

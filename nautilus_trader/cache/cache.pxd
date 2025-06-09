@@ -13,12 +13,13 @@
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
 
+from decimal import Decimal
+
 from cpython.datetime cimport datetime
 from cpython.datetime cimport timedelta
 from libc.stdint cimport uint64_t
 
 from nautilus_trader.accounting.accounts.base cimport Account
-from nautilus_trader.accounting.calculators cimport ExchangeRateCalculator
 from nautilus_trader.cache.base cimport CacheFacade
 from nautilus_trader.cache.facade cimport CacheDatabaseFacade
 from nautilus_trader.common.actor cimport Actor
@@ -29,6 +30,8 @@ from nautilus_trader.core.rust.model cimport PositionSide
 from nautilus_trader.model.book cimport OrderBook
 from nautilus_trader.model.data cimport Bar
 from nautilus_trader.model.data cimport BarType
+from nautilus_trader.model.data cimport IndexPriceUpdate
+from nautilus_trader.model.data cimport MarkPriceUpdate
 from nautilus_trader.model.data cimport QuoteTick
 from nautilus_trader.model.data cimport TradeTick
 from nautilus_trader.model.identifiers cimport AccountId
@@ -43,6 +46,7 @@ from nautilus_trader.model.instruments.base cimport Instrument
 from nautilus_trader.model.instruments.synthetic cimport SyntheticInstrument
 from nautilus_trader.model.objects cimport Currency
 from nautilus_trader.model.objects cimport Money
+from nautilus_trader.model.objects cimport Price
 from nautilus_trader.model.orders.base cimport Order
 from nautilus_trader.model.orders.list cimport OrderList
 from nautilus_trader.model.position cimport Position
@@ -52,26 +56,29 @@ from nautilus_trader.trading.strategy cimport Strategy
 cdef class Cache(CacheFacade):
     cdef Logger _log
     cdef CacheDatabaseFacade _database
-    cdef ExchangeRateCalculator _xrate_calculator
 
     cdef dict _general
-    cdef dict _xrate_symbols
-    cdef dict _quote_ticks
-    cdef dict _trade_ticks
-    cdef dict _order_books
-    cdef dict _bars
-    cdef dict _bars_bid
-    cdef dict _bars_ask
     cdef dict _currencies
     cdef dict _instruments
     cdef dict _synthetics
+    cdef dict _order_books
+    cdef dict _own_order_books
+    cdef dict _quote_ticks
+    cdef dict _trade_ticks
+    cdef dict _xrate_symbols
+    cdef dict _mark_prices
+    cdef dict _index_prices
+    cdef dict _bars
+    cdef dict _bars_bid
+    cdef dict _bars_ask
     cdef dict _accounts
     cdef dict _orders
     cdef dict _order_lists
     cdef dict _positions
     cdef dict _position_snapshots
     cdef dict _greeks
-    cdef dict _interest_rate_curves
+    cdef dict _yield_curves
+    cdef dict[tuple[Currency, Currency], double] _mark_xrates
 
     cdef dict _index_venue_account
     cdef dict _index_venue_orders
@@ -91,6 +98,7 @@ cdef class Cache(CacheFacade):
     cdef dict _index_exec_spawn_orders
     cdef set _index_orders
     cdef set _index_orders_open
+    cdef set _index_orders_open_pyo3
     cdef set _index_orders_closed
     cdef set _index_orders_emulated
     cdef set _index_orders_inflight
@@ -110,6 +118,7 @@ cdef class Cache(CacheFacade):
     cdef readonly int bar_capacity
     """The caches bar capacity.\n\n:returns: `int`"""
 
+    cpdef void cache_all(self)
     cpdef void cache_general(self)
     cpdef void cache_currencies(self)
     cpdef void cache_instruments(self)
@@ -121,6 +130,11 @@ cdef class Cache(CacheFacade):
     cpdef void build_index(self)
     cpdef bint check_integrity(self)
     cpdef bint check_residuals(self)
+    cpdef void purge_closed_orders(self, uint64_t ts_now, uint64_t buffer_secs=*)
+    cpdef void purge_closed_positions(self, uint64_t ts_now, uint64_t buffer_secs=*)
+    cpdef void purge_order(self, ClientOrderId client_order_id)
+    cpdef void purge_position(self, PositionId position_id)
+    cpdef void purge_account_events(self, uint64_t ts_now, uint64_t lookback_secs=*)
     cpdef void clear_index(self)
     cpdef void reset(self)
     cpdef void dispose(self)
@@ -147,8 +161,11 @@ cdef class Cache(CacheFacade):
     cpdef void load_strategy(self, Strategy strategy)
 
     cpdef void add_order_book(self, OrderBook order_book)
+    cpdef void add_own_order_book(self, own_order_book)
     cpdef void add_quote_tick(self, QuoteTick tick)
     cpdef void add_trade_tick(self, TradeTick tick)
+    cpdef void add_mark_price(self, MarkPriceUpdate mark_price)
+    cpdef void add_index_price(self, IndexPriceUpdate index_price)
     cpdef void add_bar(self, Bar bar)
     cpdef void add_quote_ticks(self, list ticks)
     cpdef void add_trade_ticks(self, list ticks)
@@ -170,6 +187,7 @@ cdef class Cache(CacheFacade):
     cpdef void update_account(self, Account account)
     cpdef void update_order(self, Order order)
     cpdef void update_order_pending_cancel_local(self, Order order)
+    cpdef void update_own_order_book(self, Order order)
     cpdef void update_position(self, Position position)
     cpdef void update_actor(self, Actor actor)
     cpdef void update_strategy(self, Strategy strategy)
@@ -177,6 +195,7 @@ cdef class Cache(CacheFacade):
     cpdef void delete_strategy(self, Strategy strategy)
 
     cpdef void heartbeat(self, datetime timestamp)
+    cpdef void audit_own_order_books(self)
 
     cdef timedelta _get_timedelta(self, BarType bar_type)
 
@@ -186,3 +205,9 @@ cdef class Cache(CacheFacade):
         object price_type=*,
         aggregation_source=*,
     )
+
+
+cdef dict[Decimal, list[Order]] process_own_order_map(
+    dict[Decimal, list[nautilus_pyo3.OwnBookOrder]] own_order_map,
+    dict[ClientOrderId, Order] order_cache,
+)

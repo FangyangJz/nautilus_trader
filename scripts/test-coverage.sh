@@ -3,7 +3,7 @@ set -eo pipefail
 
 # Function to update Cython version in pyproject.toml
 update_cython_version() {
-    local old_version="3.1.0a1"
+    local old_version="3.1.0"
     local new_version="3.0.11"
 
     # Create backup of original file
@@ -25,11 +25,11 @@ update_cython_version() {
 
 # TODO: Temporarily change Cython version in pyproject.toml while we require v3.0.11 for coverage
 update_cython_version
-poetry lock --no-update
+uv lock --no-upgrade
 
 export PROFILE_MODE=true
-poetry install --with test --all-extras
-poetry run pytest \
+uv sync --all-groups --all-extras
+uv run --no-sync pytest \
     --cov-report=term \
     --cov-report=xml \
     --cov=nautilus_trader

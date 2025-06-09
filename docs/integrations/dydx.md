@@ -12,27 +12,27 @@ central components.
 
 ## Installation
 
-To install the latest `nautilus_trader` package along with the `dydx` dependencies using pip:
+To install NautilusTrader with dYdX support:
 
-```
-pip install -U "nautilus_trader[dydx]"
+```bash
+pip install --upgrade "nautilus_trader[dydx]"
 ```
 
-To install from source using poetry:
+To build from source with all extras (including dYdX):
 
-```
-poetry install --extras dydx
+```bash
+uv sync --all-extras
 ```
 
 ## Examples
 
-You can find working live example scripts [here](https://github.com/nautechsystems/nautilus_trader/tree/develop/examples/live/dydx/).
+You can find live example scripts [here](https://github.com/nautechsystems/nautilus_trader/tree/develop/examples/live/dydx/).
 
 ## Overview
 
-The following documentation assumes a trader is setting up for both live market
-data feeds, and trade execution. The full dYdX integration consists of an assortment of components,
-which can be used together or separately depending on the user's needs.
+This guide assumes a trader is setting up for both live market data feeds, and trade execution.
+The dYdX adapter includes multiple components, which can be used together or separately depending
+on the use case.
 
 - `DYDXHttpClient`: Low-level HTTP API connectivity.
 - `DYDXWebSocketClient`: Low-level WebSocket API connectivity.
@@ -55,12 +55,6 @@ futureproof in case other products become available on dYdX, NautilusTrader appe
 available perpetual symbols. For example, the Bitcoin/USD-C perpetual futures contract is identified
 as `BTC-USD-PERP`. The quote currency for all markets is USD-C. Therefore, dYdX abbreviates it to USD.
 
-## Order types
-
-dYdX offers a flexible combination of trigger types, enabling a broader range of Nautilus orders.
-However, the execution engine currently only supports submitting market and limit orders. Stop orders
-and trailing stop orders can be implemented later.
-
 ## Short-term and long-term orders
 
 dYdX makes a distinction between short-term orders and long-term orders (or stateful orders).
@@ -72,7 +66,7 @@ By default, all orders are sent as short-term orders. To construct long-term ord
 an order like this:
 
 ```python
-from nautilus_trader.adapters.dydx.common.common import DYDXOrderTags
+from nautilus_trader.adapters.dydx import DYDXOrderTags
 
 order: LimitOrder = self.order_factory.limit(
     instrument_id=self.instrument_id,
@@ -88,8 +82,9 @@ order: LimitOrder = self.order_factory.limit(
 ```
 
 To specify the number of blocks that an order is active:
+
 ```python
-from nautilus_trader.adapters.dydx.common.common import DYDXOrderTags
+from nautilus_trader.adapters.dydx import DYDXOrderTags
 
 order: LimitOrder = self.order_factory.limit(
     instrument_id=self.instrument_id,
@@ -105,6 +100,7 @@ order: LimitOrder = self.order_factory.limit(
 ```
 
 ## Market orders
+
 Market orders require specifying a price to for price slippage protection and use hidden orders.
 By setting a price for a market order, you can limit the potential price slippage. For example,
 if you set the price of $100 for a market buy order, the order will only be executed if the market price
@@ -117,6 +113,7 @@ create a hidden order that will only be executed if the market price reaches the
 If the market price is not specified, a default value of 0 is used.
 
 To specify the price when creating a market order:
+
 ```python
 order = self.order_factory.market(
     instrument_id=self.instrument_id,
@@ -126,6 +123,69 @@ order = self.order_factory.market(
     tags=[DYDXOrderTags(is_short_term_order=True, market_order_price=Price.from_str("10_000")).value],
 )
 ```
+
+## Stop limit and stop market orders
+
+Both stop limit and stop market conditional orders can be submitted. dYdX only supports long-term orders
+for conditional orders.
+
+## Capability Matrix
+
+dYdX supports perpetual futures trading with a comprehensive set of order types and execution features.
+
+### Order Types
+
+| Order Type             | Perpetuals | Notes                                   |
+|------------------------|------------|-----------------------------------------|
+| `MARKET`               | ✓          | Requires price for slippage protection. |
+| `LIMIT`                | ✓          |                                         |
+| `STOP_MARKET`          | ✓          | Long-term orders only.                  |
+| `STOP_LIMIT`           | ✓          | Long-term orders only.                  |
+| `MARKET_IF_TOUCHED`    | -          | *Not supported*.                        |
+| `LIMIT_IF_TOUCHED`     | -          | *Not supported*.                        |
+| `TRAILING_STOP_MARKET` | -          | *Not supported*.                        |
+
+### Execution Instructions
+
+| Instruction   | Perpetuals | Notes                                           |
+|---------------|------------|-------------------------------------------------|
+| `post_only`   | ✓          | Supported on all order types.                   |
+| `reduce_only` | ✓          | Supported on all order types.                   |
+
+### Time-in-Force Options
+
+| Time-in-Force | Perpetuals | Notes                                           |
+|---------------|------------|-------------------------------------------------|
+| `GTC`         | ✓          | Good Till Canceled.                             |
+| `GTD`         | ✓          | Good Till Date.                                 |
+| `FOK`         | ✓          | Fill or Kill.                                   |
+| `IOC`         | ✓          | Immediate or Cancel.                            |
+
+### Advanced order features
+
+| Feature            | Perpetuals | Notes                                           |
+|--------------------|------------|-------------------------------------------------|
+| Order Modification | ✓          | Short-term orders only; cancel-replace method.  |
+| Bracket/OCO Orders | -          | *Not supported*.                                |
+| Iceberg Orders     | -          | *Not supported*.                                |
+
+### Configuration options
+
+The following execution client configuration options are available:
+
+| Option                       | Default | Description                                          |
+|------------------------------|---------|------------------------------------------------------|
+| `subaccount`                 | `0`     | Subaccount number (venue creates subaccount 0 by default). |
+| `wallet_address`             | `None`  | dYdX wallet address for the account. |
+| `mnemonic`                   | `None`  | Mnemonic for generating private key for order signing. |
+| `is_testnet`                 | `False` | If `True`, connects to testnet; if `False`, connects to mainnet. |
+
+### Order Classification
+
+dYdX classifies orders as either **short-term** or **long-term** orders:
+
+- **Short-term orders**: Default for all orders; intended for high-frequency trading and market orders.
+- **Long-term orders**: Required for conditional orders; use `DYDXOrderTags` to specify.
 
 ## Configuration
 
@@ -164,8 +224,8 @@ config = TradingNodeConfig(
 Then, create a `TradingNode` and add the client factories:
 
 ```python
-from nautilus_trader.adapters.dydx.factories import DYDXLiveDataClientFactory
-from nautilus_trader.adapters.dydx.factories import DYDXLiveExecClientFactory
+from nautilus_trader.adapters.dydx import DYDXLiveDataClientFactory
+from nautilus_trader.adapters.dydx import DYDXLiveExecClientFactory
 from nautilus_trader.live.node import TradingNode
 
 # Instantiate the live trading node with a configuration
@@ -186,12 +246,18 @@ Either pass the corresponding `wallet_address` and `mnemonic` values to the conf
 set the following environment variables:
 
 For dYdX live clients, you can set:
+
 - `DYDX_WALLET_ADDRESS`
 - `DYDX_MNEMONIC`
 
 For dYdX testnet clients, you can set:
+
 - `DYDX_TESTNET_WALLET_ADDRESS`
 - `DYDX_TESTNET_MNEMONIC`
+
+:::tip
+We recommend using environment variables to manage your credentials.
+:::
 
 The data client is using the wallet address to determine the trading fees. The trading fees are used during back tests only.
 
@@ -224,7 +290,7 @@ config = TradingNodeConfig(
 
 Some dYdX instruments are unable to be parsed into Nautilus objects if they
 contain enormous field values beyond what can be handled by the platform.
-In these cases, a _warn and continue_ approach is taken (the instrument will not be available).
+In these cases, a *warn and continue* approach is taken (the instrument will not be available).
 
 ## Order books
 

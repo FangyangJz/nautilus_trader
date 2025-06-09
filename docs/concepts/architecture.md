@@ -14,13 +14,14 @@ of NautilusTrader, this section covers:
 - And finally, the implementation techniques that are crucial for performance, reliability, and robustness.
 
 :::note
-Throughout the documentation, the term _"Nautilus system boundary"_ refers to operations within
+Throughout the documentation, the term *"Nautilus system boundary"* refers to operations within
 the runtime of a single Nautilus node (also known as a "trader instance").
 :::
 
 ## Design philosophy
 
 The major architectural techniques and design patterns employed by NautilusTrader are:
+
 - [Domain driven design (DDD)](https://en.wikipedia.org/wiki/Domain-driven_design)
 - [Event-driven architecture](https://en.wikipedia.org/wiki/Event-driven_programming)
 - [Messaging patterns](https://en.wikipedia.org/wiki/Messaging_pattern) (Pub/Sub, Req/Rep, point-to-point)
@@ -45,10 +46,69 @@ when making design and architectural decisions, roughly in order of 'weighting'.
 ## System architecture
 
 The NautilusTrader codebase is actually both a framework for composing trading
-systems, and a set of default system implementations which can operate in various
-[environment contexts](/concepts/architecture.md#environment-contexts).
+ systems, and a set of default system implementations which can operate in various
+[environment contexts](#environment-contexts).
 
-![Architecture](https://github.com/nautechsystems/nautilus_trader/blob/develop/docs/_images/architecture-overview.png?raw=true "architecture")
+![Architecture](https://github.com/nautechsystems/nautilus_trader/blob/develop/assets/architecture-overview.png?raw=true "architecture")
+
+### Core Components
+
+The platform is built around several key components that work together to provide a comprehensive trading system:
+
+#### NautilusKernel
+
+The central orchestration component responsible for:
+
+- Initializing and managing all system components.
+- Configuring the messaging infrastructure.
+- Maintaining environment-specific behaviors.
+- Coordinating shared resources and lifecycle management.
+- Providing a unified entry point for system operations.
+
+#### MessageBus
+
+The backbone of inter-component communication, implementing:
+
+- **Publish/Subscribe patterns**: For broadcasting events and data to multiple consumers.
+- **Request/Response communication**: For operations requiring acknowledgment.
+- **Command/Event messaging**: For triggering actions and notifying state changes.
+- **Optional state persistence**: Using Redis for durability and restart capabilities.
+
+#### Cache
+
+High-performance in-memory storage system that:
+
+- Stores instruments, accounts, orders, positions, and more.
+- Provides performant fetching capabilities for trading components.
+- Maintains consist state across the system.
+- Supports both read and write operations with optimized access patterns.
+
+#### DataEngine
+
+Processes and routes market data throughout the system:
+
+- Handles multiple data types (quotes, trades, bars, order books, custom data, and more).
+- Routes data to appropriate consumers based on subscriptions.
+- Manages data flow from external sources to internal components.
+
+#### ExecutionEngine
+
+Manages order lifecycle and execution:
+
+- Routes trading commands to the appropriate adapter clients.
+- Tracks order and position states.
+- Coordinates with risk management systems.
+- Handles execution reports and fills from venues.
+- Handles reconciliation of external execution state.
+
+#### RiskEngine
+
+Provides comprehensive risk management:
+
+- Pre-trade risk checks and validation.
+- Position and exposure monitoring.
+- Real-time risk calculations.
+- Configurable risk rules and limits.
 
 ### Environment contexts
 
@@ -67,8 +127,42 @@ The platform has been designed to share as much common code between backtest, sa
 This is formalized in the `system` subpackage, where you will find the `NautilusKernel` class,
 providing a common core system 'kernel'.
 
-The _ports and adapters_ architectural style enables modular components to be integrated into the
+The *ports and adapters* architectural style enables modular components to be integrated into the
 core system, providing various hooks for user-defined or custom component implementations.
+
+### Data and Execution Flow Patterns
+
+Understanding how data and execution flow through the system is crucial for effective use of the platform:
+
+#### Data Flow Pattern
+
+1. **External Data Ingestion**: Market data enters via venue-specific `DataClient` adapters where it is normalized.
+2. **Data Processing**: The `DataEngine` handles data processing for internal components.
+3. **Caching**: Processed data is stored in the high-performance `Cache` for fast access.
+4. **Event Publishing**: Data events are published to the `MessageBus`.
+5. **Consumer Delivery**: Subscribed components (Actors, Strategies) receive relevant data events.
+
+#### Execution Flow Pattern
+
+1. **Command Generation**: User strategies create trading commands.
+2. **Command Publishing**: Commands are sent through the `MessageBus`.
+3. **Risk Validation**: The `RiskEngine` validates trading commands against configured risk rules.
+4. **Execution Routing**: The `ExecutionEngine` routes commands to appropriate venues.
+5. **External Submission**: The `ExecutionClient` submits orders to external trading venues.
+6. **Event Flow Back**: Order events (fills, cancellations) flow back through the system.
+7. **State Updates**: Portfolio and position states are updated based on execution events.
+
+#### Component State Management
+
+All components follow a finite state machine pattern with well-defined states:
+
+- **PRE_INITIALIZED**: Component is created but not yet wired up to the system.
+- **READY**: Component is configured and wired up, but not yet running.
+- **RUNNING**: Component is actively processing messages and performing operations.
+- **STOPPED**: Component has been gracefully stopped and is no longer processing.
+- **DEGRADED**: Component is running but with reduced functionality due to errors.
+- **FAULTED**: Component has encountered a critical error and cannot continue.
+- **DISPOSED**: Component has been cleaned up and resources have been released.
 
 ### Messaging
 
@@ -80,11 +174,11 @@ resulted in arriving at this design, as it was found the overhead of context swi
 didn't actually result in improved performance.
 
 When considering the logic of how your algo trading will work within the system boundary, you can expect each component to consume messages
-in a deterministic synchronous way (_similar_ to the [actor model](https://en.wikipedia.org/wiki/Actor_model)).
+in a deterministic synchronous way (*similar* to the [actor model](https://en.wikipedia.org/wiki/Actor_model)).
 
 :::note
 Of interest is the LMAX exchange architecture, which achieves award winning performance running on
-a single thread. You can read about their _disruptor_ pattern based architecture in [this interesting article](https://martinfowler.com/articles/lmax.html) by Martin Fowler.
+a single thread. You can read about their *disruptor* pattern based architecture in [this interesting article](https://martinfowler.com/articles/lmax.html) by Martin Fowler.
 :::
 
 ## Framework organization
@@ -110,7 +204,6 @@ for each of these subpackages from the left nav menu.
 - `data`: The data stack and data tooling for the platform.
 - `execution`: The execution stack for the platform.
 - `indicators`: A set of efficient indicators and analyzers.
-- `msgbus`: A universal message bus for connecting system components.
 - `persistence`: Data storage, cataloging and retrieval, mainly to support backtesting.
 - `portfolio`: Portfolio management functionality.
 - `risk`: Risk specific components and tooling.
@@ -120,11 +213,11 @@ for each of these subpackages from the left nav menu.
 
 - `backtest`: Backtesting componentry as well as a backtest engine and node implementations.
 - `live`: Live engine and client implementations as well as a node for live trading.
-- `system`: The core system kernel common between `backtest`, `sandbox`, `live` [environment contexts](/concepts/architecture.md#environment-contexts).
+- `system`: The core system kernel common between `backtest`, `sandbox`, `live` [environment contexts](#environment-contexts).
 
 ## Code structure
 
-The foundation of the codebase is the `nautilus_core` directory, containing a collection of core Rust crates including a C foreign function interface (FFI) generated by `cbindgen`.
+The foundation of the codebase is the `crates` directory, containing a collection of core Rust crates including a C foreign function interface (FFI) generated by `cbindgen`.
 
 The bulk of the production code resides in the `nautilus_trader` directory, which contains a collection of Python/Cython subpackages and modules.
 
@@ -165,10 +258,10 @@ Rust or Cython to be installed at runtime.
 
 ### Type safety
 
-The design of the platform holds software correctness and safety at the highest level.
+The design of the platform prioritizes software correctness and safety at the highest level.
 
 The Rust codebase in `nautilus_core` is always type safe and memory safe as guaranteed by the `rustc` compiler,
-and so is _correct by construction_ (unless explicitly marked `unsafe`, see the Rust section of the [Developer Guide](../developer_guide/rust.md)).
+and so is *correct by construction* (unless explicitly marked `unsafe`, see the Rust section of the [Developer Guide](../developer_guide/rust.md)).
 
 Cython provides type safety at the C level at both compile time, and runtime:
 

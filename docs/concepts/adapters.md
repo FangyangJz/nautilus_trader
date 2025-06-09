@@ -1,9 +1,9 @@
 # Adapters
 
 The NautilusTrader design integrates data providers and/or trading venues
-through adapter implementations, these can be found in the top level `adapters` subpackage.
+through adapter implementations. These can be found in the top-level `adapters` subpackage.
 
-An integrations adapter is _typically_ comprised of the following main components:
+An integration adapter is *typically* comprised of the following main components:
 
 - `HttpClient`
 - `WebSocketClient`
@@ -14,18 +14,23 @@ An integrations adapter is _typically_ comprised of the following main component
 ## Instrument providers
 
 Instrument providers do as their name suggests - instantiating Nautilus
-`Instrument` objects by parsing the publisher or venues raw API.
+`Instrument` objects by parsing the raw API of the publisher or venue.
 
 The use cases for the instruments available from an `InstrumentProvider` are either:
+
 - Used standalone to discover the instruments available for an integration, using these for research or backtesting purposes
-- Used in a `sandbox` or `live` [environment context](/concepts/architecture.md#environment-contexts) for consumption by actors/strategies
+- Used in a `sandbox` or `live` [environment context](architecture.md#environment-contexts) for consumption by actors/strategies
 
 ### Research and backtesting
 
 Here is an example of discovering the current instruments for the Binance Futures testnet:
+
 ```python
+import asyncio
+import os
+
 from nautilus_trader.adapters.binance.common.enums import BinanceAccountType
-from nautilus_trader.adapters.binance.factories import get_cached_binance_http_client
+from nautilus_trader.adapters.binance import get_cached_binance_http_client
 from nautilus_trader.adapters.binance.futures.providers import BinanceFuturesInstrumentProvider
 from nautilus_trader.common.component import LiveClock
 
@@ -85,7 +90,7 @@ An example of this is a `DataRequest` for an `Instrument`, which the `Actor` cla
 In this particular case, the `Actor` implements a separate method `request_instrument`. A similar type of
 `DataRequest` could be instantiated and called from anywhere and/or anytime in the actor/strategy code.
 
-On the actor/strategy:
+A simplified version of `request_instrument` for an actor/strategy is:
 
 ```python
 # nautilus_trader/common/actor.pyx
@@ -101,49 +106,65 @@ cpdef void request_instrument(self, InstrumentId instrument_id, ClientId client_
     client_id : ClientId, optional
         The specific client ID for the command.
         If ``None`` then will be inferred from the venue in the instrument ID.
-
     """
     Condition.not_none(instrument_id, "instrument_id")
 
-    cdef DataRequest request = DataRequest(
+    cdef RequestInstrument request = RequestInstrument(
+        instrument_id=instrument_id,
+        start=None,
+        end=None,
         client_id=client_id,
         venue=instrument_id.venue,
-        data_type=DataType(Instrument, metadata={
-            "instrument_id": instrument_id,
-        }),
         callback=self._handle_instrument_response,
         request_id=UUID4(),
         ts_init=self._clock.timestamp_ns(),
+        params=None,
     )
 
     self._send_data_req(request)
-
 ```
 
-The handler on the `ExecutionClient`:
+A simplified version of the request handler implemented in a `LiveMarketDataClient` that will retrieve the data
+and send it back to actors/strategies is for example:
 
 ```python
-from nautilus_trader.core import UUID4
-from nautilus_trader.model import DataType
-from nautilus_trader.model import InstrumentId
+# nautilus_trader/live/data_client.py
 
-# nautilus_trader/adapters/binance/spot/data.py
-def request_instrument(self, instrument_id: InstrumentId, correlation_id: UUID4, params: dict[str, Any]):
-    instrument: Instrument | None = self._instrument_provider.find(instrument_id)
+def request_instrument(self, request: RequestInstrument) -> None:
+    self.create_task(self._request_instrument(request))
+
+# nautilus_trader/adapters/binance/data.py
+
+async def _request_instrument(self, request: RequestInstrument) -> None:
+    instrument: Instrument | None = self._instrument_provider.find(request.instrument_id)
+
     if instrument is None:
-        self._log.error(f"Cannot find instrument for {instrument_id}.")
+        self._log.error(f"Cannot find instrument for {request.instrument_id}")
         return
 
-    data_type = DataType(
-        type=Instrument,
-        metadata={"instrument_id": instrument_id},
-    )
+    self._handle_instrument(instrument, request.id, request.params)
+```
 
-    self._handle_data_response(
-        data_type=data_type,
-        data=[instrument],  # Data engine handles lists of instruments
-        correlation_id=correlation_id,
-        params=params,
-    )
+The `DataEngine` which is an important component in Nautilus links a request with a `DataClient`.
+For example a simplified version of handling an instrument request is:
 
+```python
+# nautilus_trader/data/engine.pyx
+
+self._msgbus.register(endpoint="DataEngine.request", handler=self.request)
+
+cpdef void request(self, RequestData request):
+    self._handle_request(request)
+
+cpdef void _handle_request(self, RequestData request):
+    cdef DataClient client = self._clients.get(request.client_id)
+
+    if client is None:
+        client = self._routing_map.get(request.venue, self._default_client)
+
+    if isinstance(request, RequestInstrument):
+        self._handle_request_instrument(client, request)
+
+cpdef void _handle_request_instrument(self, DataClient client, RequestInstrument request):
+    client.request_instrument(request)
 ```

@@ -72,7 +72,7 @@ class InteractiveBrokersClientMarketDataMixin(BaseMixin):
             The market data type to be set
 
         """
-        self._log.info(f"Setting Market DataType to {MarketDataTypeEnum.to_str(market_data_type)}")
+        self._log.info(f"Setting Market DataType to {MarketDataTypeEnum.toStr(market_data_type)}")
         self._eclient.reqMarketDataType(market_data_type)
 
     async def _subscribe(
@@ -295,10 +295,12 @@ class InteractiveBrokersClientMarketDataMixin(BaseMixin):
 
         # Check and download the gaps or approx 300 bars whichever is less
         last_bar: Bar = self._cache.bar(bar_type)
+
         if last_bar is None:
             duration = pd.Timedelta(bar_type.spec.timedelta.total_seconds() * 300, "sec")
         else:
             duration = pd.Timedelta(self._clock.timestamp_ns() - last_bar.ts_event, "ns")
+
         bar_size_setting: str = bar_spec_to_bar_size(bar_type.spec)
         self._eclient.reqHistoricalData(
             reqId=subscription.req_id,
@@ -365,6 +367,7 @@ class InteractiveBrokersClientMarketDataMixin(BaseMixin):
             end_date_time = end_date_time.astimezone(ZoneInfo("UTC"))
 
         name = (bar_type, end_date_time)
+
         if not (request := self._requests.get(name=name)):
             req_id = self._next_req_id()
             bar_size_setting = bar_spec_to_bar_size(bar_type.spec)
@@ -386,13 +389,17 @@ class InteractiveBrokersClientMarketDataMixin(BaseMixin):
                 ),
                 cancel=functools.partial(self._eclient.cancelHistoricalData, reqId=req_id),
             )
+
             if not request:
                 return []
+
             self._log.debug(f"reqHistoricalData: {request.req_id=}, {contract=}")
             request.handle()
+
             return await self._await_request(request, timeout, default_value=[])
         else:
             self._log.info(f"Request already exist for {request}")
+
             return []
 
     async def get_historical_ticks(
@@ -454,12 +461,16 @@ class InteractiveBrokersClientMarketDataMixin(BaseMixin):
                 ),
                 cancel=functools.partial(self._eclient.cancelHistoricalData, reqId=req_id),
             )
+
             if not request:
                 return None
+
             request.handle()
+
             return await self._await_request(request, timeout)
         else:
             self._log.info(f"Request already exist for {request}")
+
             return None
 
     async def _process_bar_data(
@@ -504,6 +515,7 @@ class InteractiveBrokersClientMarketDataMixin(BaseMixin):
         self._bar_type_to_last_bar[bar_type_str] = bar
         bar_type: BarType = BarType.from_str(bar_type_str)
         ts_init = self._clock.timestamp_ns()
+
         if not handle_revised_bars:
             if previous_bar and is_new_bar:
                 bar = previous_bar
@@ -512,6 +524,7 @@ class InteractiveBrokersClientMarketDataMixin(BaseMixin):
 
             if historical:
                 ts_init = await self._ib_bar_to_ts_init(bar, bar_type)
+
                 if ts_init >= self._clock.timestamp_ns():
                     return None  # The bar is incomplete
 
@@ -527,7 +540,7 @@ class InteractiveBrokersClientMarketDataMixin(BaseMixin):
         """
         Convert the date from BarData to unix nanoseconds.
 
-        If the bar type's aggregation is 14, the bar date is always returned in the
+        If the bar type's aggregation is 14 - 16, the bar date is always returned in the
         YYYYMMDD format from IB. For all other aggregations, the bar date is returned
         in system time.
 
@@ -543,13 +556,52 @@ class InteractiveBrokersClientMarketDataMixin(BaseMixin):
         int
 
         """
-        if bar_type.spec.aggregation == 14:
-            # Day bars are always returned with bar date in YYYYMMDD format
+        if bar_type.spec.aggregation in [14, 15, 16]:
+            # Day/Week/Month bars are always returned with bar date in YYYYMMDD format
             ts = pd.to_datetime(bar.date, format="%Y%m%d", utc=True)
         else:
             ts = pd.Timestamp.fromtimestamp(int(bar.date), tz=pytz.utc)
 
         return ts.value
+
+    async def _ib_bar_to_ts_event(self, bar: BarData, bar_type: BarType) -> int:
+        """
+        Calculate the ts_event timestamp for a bar.
+
+        This method computes the timestamp at which data event occurred, by adjusting
+        the provided bar's timestamp based on the bar type's duration. ts_event is set
+        to the start of the bar period.
+
+        Week/Month bars's date returned from IB represents ending date,
+        the start of bar period should be start of the week and month respectively
+
+        Parameters
+        ----------
+        bar : BarData
+            The bar data to be used for the calculation.
+        bar_type : BarType
+            The type of the bar, which includes information about the bar's duration.
+
+        Returns
+        -------
+        int
+
+        """
+        ts_event = 0
+
+        if bar_type.spec.aggregation in [15, 16]:
+            date_obj = pd.to_datetime(bar.date, format="%Y%m%d", utc=True)
+
+            if bar_type.spec.aggregation == 15:
+                first_day_of_week = date_obj - pd.Timedelta(days=date_obj.weekday())
+                ts_event = first_day_of_week.value
+            else:
+                first_day_of_month = date_obj.replace(day=1)
+                ts_event = first_day_of_month.value
+        else:
+            ts_event = await self._convert_ib_bar_date_to_unix_nanos(bar, bar_type)
+
+        return ts_event
 
     async def _ib_bar_to_ts_init(self, bar: BarData, bar_type: BarType) -> int:
         """
@@ -572,7 +624,15 @@ class InteractiveBrokersClientMarketDataMixin(BaseMixin):
 
         """
         ts = await self._convert_ib_bar_date_to_unix_nanos(bar, bar_type)
-        return ts + pd.Timedelta(bar_type.spec.timedelta).value
+
+        if bar_type.spec.aggregation in [15, 16]:
+            # Week/Month bars's date represents ending date
+            return ts
+        elif bar_type.spec.aggregation == 14:
+            # -1 to make day's bar ts_event and ts_init on the same day
+            return ts + pd.Timedelta(bar_type.spec.timedelta).value - 1
+        else:
+            return ts + pd.Timedelta(bar_type.spec.timedelta).value
 
     async def _ib_bar_to_nautilus_bar(
         self,
@@ -601,10 +661,13 @@ class InteractiveBrokersClientMarketDataMixin(BaseMixin):
 
         """
         instrument = self._cache.instrument(bar_type.instrument_id)
+
         if not instrument:
             raise ValueError(f"No cached instrument for {bar_type.instrument_id}")
 
-        ts_event = await self._convert_ib_bar_date_to_unix_nanos(bar, bar_type)
+        ts_event = await self._ib_bar_to_ts_event(bar, bar_type)
+        # used to be _convert_ib_bar_date_to_unix_nanos
+
         return Bar(
             bar_type=bar_type,
             open=instrument.make_price(bar.open),
@@ -670,9 +733,9 @@ class InteractiveBrokersClientMarketDataMixin(BaseMixin):
         to frozen and back and from delayed to delayed-frozen and back.
         """
         if market_data_type == MarketDataTypeEnum.REALTIME:
-            self._log.debug(f"Market DataType is {MarketDataTypeEnum.to_str(market_data_type)}")
+            self._log.debug(f"Market DataType is {MarketDataTypeEnum.toStr(market_data_type)}")
         else:
-            self._log.warning(f"Market DataType is {MarketDataTypeEnum.to_str(market_data_type)}")
+            self._log.warning(f"Market DataType is {MarketDataTypeEnum.toStr(market_data_type)}")
 
     async def process_tick_by_tick_bid_ask(
         self,
@@ -791,6 +854,7 @@ class InteractiveBrokersClientMarketDataMixin(BaseMixin):
                 bar=bar,
                 ts_init=await self._ib_bar_to_ts_init(bar, bar_type),
             )
+
             if bar:
                 request.result.append(bar)
         elif subscription := self._subscriptions.get(req_id=req_id):
@@ -800,6 +864,7 @@ class InteractiveBrokersClientMarketDataMixin(BaseMixin):
                 handle_revised_bars=False,
                 historical=True,
             )
+
             if bar:
                 await self._handle_data(bar)
         else:
@@ -824,8 +889,10 @@ class InteractiveBrokersClientMarketDataMixin(BaseMixin):
         """
         if not (subscription := self._subscriptions.get(req_id=req_id)):
             return
+
         if not isinstance(subscription.handle, functools.partial):
             raise TypeError(f"Expecting partial type subscription method. {subscription=}")
+
         if bar := await self._process_bar_data(
             bar_type_str=str(subscription.name),
             bar=bar,
@@ -848,6 +915,7 @@ class InteractiveBrokersClientMarketDataMixin(BaseMixin):
         """
         if not done:
             return
+
         if request := self._requests.get(req_id=req_id):
             instrument_id = InstrumentId.from_str(request.name[0])
             instrument = self._cache.instrument(instrument_id)
@@ -873,6 +941,7 @@ class InteractiveBrokersClientMarketDataMixin(BaseMixin):
         """
         if not done:
             return
+
         await self._process_trade_ticks(req_id, ticks)
 
     async def process_historical_ticks(self, *, req_id: int, ticks: list, done: bool) -> None:
@@ -881,6 +950,7 @@ class InteractiveBrokersClientMarketDataMixin(BaseMixin):
         """
         if not done:
             return
+
         await self._process_trade_ticks(req_id, ticks)
 
     async def get_price(self, contract, tick_type="MidPoint"):
@@ -924,4 +994,5 @@ class InteractiveBrokersClientMarketDataMixin(BaseMixin):
             cancel=functools.partial(self._eclient.cancelMktData, req_id),
         )
         request.handle()
+
         return await self._await_request(request, timeout=60)

@@ -112,7 +112,7 @@ class TestBacktestConfig:
 
         # Assert
         assert len(result.data) == 86985
-        assert result.instrument is None
+        assert result.instruments is None
         assert result.client_id == ClientId("NewsClient")
         assert result.data[0].data_type.metadata == {"kind": "news"}
 
@@ -153,7 +153,7 @@ class TestBacktestConfig:
 
         # Assert
         assert len(result.data) == 2
-        assert result.instrument is None
+        assert result.instruments is None
         assert result.client_id is None
 
     def test_resolve_cls(self):
@@ -213,7 +213,7 @@ class TestBacktestConfigParsing:
         )
         json = msgspec.json.encode(run_config)
         result = len(msgspec.json.encode(json))
-        assert result == 1146  # UNIX
+        assert result == 1302  # UNIX
 
     @pytest.mark.skipif(sys.platform == "win32", reason="redundant to also test Windows")
     def test_run_config_parse_obj(self) -> None:
@@ -234,7 +234,7 @@ class TestBacktestConfigParsing:
         assert isinstance(config, BacktestRunConfig)
         node = BacktestNode(configs=[config])
         assert isinstance(node, BacktestNode)
-        assert len(raw) == 856  # UNIX
+        assert len(raw) == 975  # UNIX
 
     @pytest.mark.skipif(sys.platform == "win32", reason="redundant to also test Windows")
     def test_backtest_data_config_to_dict(self) -> None:
@@ -255,7 +255,7 @@ class TestBacktestConfigParsing:
         )
         json = msgspec.json.encode(run_config)
         result = len(msgspec.json.encode(json))
-        assert result == 1894
+        assert result == 2154
 
     @pytest.mark.skipif(sys.platform == "win32", reason="redundant to also test Windows")
     def test_backtest_run_config_id(self) -> None:
@@ -263,7 +263,7 @@ class TestBacktestConfigParsing:
         print("token:", token)
         value: bytes = self.backtest_config.json()
         print("token_value:", value.decode())
-        assert token == "1401fab0644a974c8879852405102b4c94dba62e4a6a087cf42f9fc0a62805c4"
+        assert token == "4f32604ec447b05be0c7a38746a01295b96a29f647638c385d4f668d01dacecc"
 
     @pytest.mark.skipif(sys.platform == "win32", reason="redundant to also test Windows")
     @pytest.mark.parametrize(
@@ -273,19 +273,19 @@ class TestBacktestConfigParsing:
                 TestConfigStubs.venue_config,
                 (),
                 {},
-                ("71b17265090437aaef857215e9abda4d1e95e6c52d29434df9bb3a70c9c2523b",),
+                ("03972e1b8abc649b22a211df779ce47b5a5791adaedcae3f4345fb0ae0e3c88a",),
             ),
             (
                 TestConfigStubs.backtest_data_config,
                 ("catalog",),
                 {},
-                ("949ef3abd03a447949d298f38a9aab669afc740720d747d4df2a9a121d78d110",),
+                ("22a83df0e65c304aff0a92070c6c55cef8a91392892a99dd6a992ad6ed829556",),
             ),
             (
                 TestConfigStubs.backtest_engine_config,
                 ("catalog",),
                 {"persist": True},
-                ("e7da8ed6038e6a9b5b38bc325246c4a645d9416a31f4b1efb158416c42484142",),
+                ("f39654b91400406374e3e4e3e7ff433e890adcae5f623d1ef6af7f823ce88449",),
             ),
             (
                 TestConfigStubs.risk_engine_config,
@@ -297,13 +297,19 @@ class TestBacktestConfigParsing:
                 TestConfigStubs.exec_engine_config,
                 (),
                 {},
-                ("3d75d349f1a2ceefd7ba5c58be8f2981d5376ccd111e288079ee9650394932d1",),
+                ("e713550a47dd10a2ae8dfbdc8a38926f1d5f62d587f996159e47d389db6daa33",),
+            ),
+            (
+                TestConfigStubs.portfolio_config,
+                (),
+                {},
+                ("3746b2ee6216effd866d21384216b26cde18297b668b122c45d61c62d098be25",),
             ),
             (
                 TestConfigStubs.streaming_config,
                 ("catalog",),
                 {},
-                ("302b840b10cdd0cc2664ee5f3bb8623ada23d6a6c7ecb8f41117fddecc6bea9a",),
+                ("fe0f050d36c142fa3ed2d7de1a0155f2ac4741b8abb8b0788165268a3ece77b9",),
             ),
         ],
     )

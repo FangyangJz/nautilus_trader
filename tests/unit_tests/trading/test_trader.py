@@ -23,6 +23,7 @@ from nautilus_trader.backtest.exchange import SimulatedExchange
 from nautilus_trader.backtest.execution_client import BacktestExecClient
 from nautilus_trader.backtest.models import FillModel
 from nautilus_trader.backtest.models import MakerTakerFeeModel
+from nautilus_trader.common import Environment
 from nautilus_trader.common.actor import Actor
 from nautilus_trader.common.component import MessageBus
 from nautilus_trader.common.component import TestClock
@@ -143,6 +144,7 @@ class TestTrader:
             risk_engine=self.risk_engine,
             exec_engine=self.exec_engine,
             clock=self.clock,
+            environment=Environment.BACKTEST,
         )
 
     def test_initialize_trader(self) -> None:
@@ -522,7 +524,7 @@ class TestTrader:
         self.trader.subscribe("events*", consumer.append)
 
         # Assert
-        assert len(self.msgbus.subscriptions("events*")) == 6
+        assert len(self.msgbus.subscriptions("events*")) == 5
         assert "events*" in self.msgbus.topics()
         assert self.msgbus.subscriptions("events*")[-1].handler == consumer.append
 
@@ -535,4 +537,4 @@ class TestTrader:
         self.trader.unsubscribe("events*", consumer.append)
 
         # Assert
-        assert len(self.msgbus.subscriptions("events*")) == 5
+        assert len(self.msgbus.subscriptions("events*")) == 4

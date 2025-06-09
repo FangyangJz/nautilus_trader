@@ -30,6 +30,7 @@ from nautilus_trader.model.currencies import USD
 from nautilus_trader.model.currencies import USDT
 from nautilus_trader.model.data import Bar
 from nautilus_trader.model.data import BarType
+from nautilus_trader.model.data import MarkPriceUpdate
 from nautilus_trader.model.data import QuoteTick
 from nautilus_trader.model.enums import AccountType
 from nautilus_trader.model.enums import OmsType
@@ -45,6 +46,7 @@ from nautilus_trader.model.objects import Money
 from nautilus_trader.model.objects import Price
 from nautilus_trader.model.objects import Quantity
 from nautilus_trader.model.position import Position
+from nautilus_trader.portfolio.config import PortfolioConfig
 from nautilus_trader.portfolio.portfolio import Portfolio
 from nautilus_trader.test_kit.providers import TestInstrumentProvider
 from nautilus_trader.test_kit.stubs.component import TestComponentStubs
@@ -62,6 +64,7 @@ AUDUSD_SIM = TestInstrumentProvider.default_fx_ccy("AUD/USD")
 GBPUSD_SIM = TestInstrumentProvider.default_fx_ccy("GBP/USD")
 USDJPY_SIM = TestInstrumentProvider.default_fx_ccy("USD/JPY")
 BTCUSDT_BINANCE = TestInstrumentProvider.btcusdt_binance()
+BTCUSDT_PERP_BINANCE = TestInstrumentProvider.btcusdt_perp_binance()
 BTCUSD_BITMEX = TestInstrumentProvider.xbtusd_bitmex()
 ETHUSD_BITMEX = TestInstrumentProvider.ethusd_bitmex()
 BETTING_INSTRUMENT = TestInstrumentProvider.betting_instrument()
@@ -90,6 +93,7 @@ class TestPortfolio:
             msgbus=self.msgbus,
             cache=self.cache,
             clock=self.clock,
+            config=PortfolioConfig(debug=True),
         )
 
         self.exec_engine = ExecutionEngine(
@@ -102,6 +106,7 @@ class TestPortfolio:
         self.cache.add_instrument(AUDUSD_SIM)
         self.cache.add_instrument(GBPUSD_SIM)
         self.cache.add_instrument(BTCUSDT_BINANCE)
+        self.cache.add_instrument(BTCUSDT_PERP_BINANCE)
         self.cache.add_instrument(BTCUSD_BITMEX)
         self.cache.add_instrument(ETHUSD_BITMEX)
 
@@ -363,7 +368,7 @@ class TestPortfolio:
         self.exec_engine.process(TestEventStubs.order_accepted(order, account_id=account_id))
 
         # Assert
-        assert self.portfolio.balances_locked(BINANCE)[USDT].as_decimal() == 50100
+        assert self.portfolio.balances_locked(BINANCE)[USDT].as_decimal() == 50_000
 
     def test_update_orders_open_margin_account(self):
         # Arrange
@@ -451,7 +456,7 @@ class TestPortfolio:
         self.portfolio.initialize_orders()
 
         # Assert
-        assert self.portfolio.margins_init(BINANCE) == {BTCUSDT_BINANCE.id: Money("0E-8", USDT)}
+        assert self.portfolio.margins_init(BINANCE) == {}
 
     def test_order_accept_updates_margin_init(self):
         # Arrange
@@ -491,7 +496,7 @@ class TestPortfolio:
 
         # Create a limit order
         order1 = self.order_factory.limit(
-            BTCUSDT_BINANCE.id,
+            BTCUSDT_PERP_BINANCE.id,
             OrderSide.BUY,
             Quantity.from_str("100"),
             Price.from_str("0.5"),
@@ -509,7 +514,7 @@ class TestPortfolio:
         self.portfolio.initialize_orders()
 
         # Assert
-        assert self.portfolio.margins_init(BINANCE)[BTCUSDT_BINANCE.id] == Money(0.1, USDT)
+        assert self.portfolio.margins_init(BINANCE)[BTCUSDT_PERP_BINANCE.id] == Money(2.5, USDT)
 
     def test_update_positions(self):
         # Arrange
@@ -659,14 +664,14 @@ class TestPortfolio:
         self.portfolio.update_account(state)
 
         order = self.order_factory.market(
-            BTCUSDT_BINANCE.id,
+            BTCUSDT_PERP_BINANCE.id,
             OrderSide.BUY,
             Quantity.from_str("10.000000"),
         )
 
         fill = TestEventStubs.order_filled(
             order=order,
-            instrument=BTCUSDT_BINANCE,
+            instrument=BTCUSDT_PERP_BINANCE,
             strategy_id=StrategyId("S-001"),
             account_id=account_id,
             position_id=PositionId("P-123456"),
@@ -674,7 +679,7 @@ class TestPortfolio:
         )
 
         last = QuoteTick(
-            instrument_id=BTCUSDT_BINANCE.id,
+            instrument_id=BTCUSDT_PERP_BINANCE.id,
             bid_price=Price.from_str("10510.00"),
             ask_price=Price.from_str("10511.00"),
             bid_size=Quantity.from_str("1.000000"),
@@ -686,7 +691,7 @@ class TestPortfolio:
         self.cache.add_quote_tick(last)
         self.portfolio.update_quote_tick(last)
 
-        position = Position(instrument=BTCUSDT_BINANCE, fill=fill)
+        position = Position(instrument=BTCUSDT_PERP_BINANCE, fill=fill)
 
         # Act
         self.cache.add_position(position, OmsType.HEDGING)
@@ -695,13 +700,13 @@ class TestPortfolio:
         # Assert
         assert self.portfolio.net_exposures(BINANCE) == {USDT: Money(105100.00000000, USDT)}
         assert self.portfolio.unrealized_pnls(BINANCE) == {USDT: Money(100.00000000, USDT)}
-        assert self.portfolio.realized_pnls(BINANCE) == {USDT: Money(-105.00000000, USDT)}
+        assert self.portfolio.realized_pnls(BINANCE) == {USDT: Money(-18.900000000, USDT)}
         assert self.portfolio.margins_maint(BINANCE) == {
-            BTCUSDT_BINANCE.id: Money(105.00000000, USDT),
+            BTCUSDT_PERP_BINANCE.id: Money(2_625.00000000, USDT),
         }
-        assert self.portfolio.net_exposure(BTCUSDT_BINANCE.id) == Money(105100.00000000, USDT)
-        assert self.portfolio.unrealized_pnl(BTCUSDT_BINANCE.id) == Money(100.00000000, USDT)
-        assert self.portfolio.realized_pnl(BTCUSDT_BINANCE.id) == Money(-105.00000000, USDT)
+        assert self.portfolio.net_exposure(BTCUSDT_PERP_BINANCE.id) == Money(105100.00000000, USDT)
+        assert self.portfolio.unrealized_pnl(BTCUSDT_PERP_BINANCE.id) == Money(100.00000000, USDT)
+        assert self.portfolio.realized_pnl(BTCUSDT_PERP_BINANCE.id) == Money(-18.900000000, USDT)
         assert self.portfolio.net_position(order.instrument_id) == Decimal("10.00000000")
         assert self.portfolio.is_net_long(order.instrument_id)
         assert not self.portfolio.is_net_short(order.instrument_id)
@@ -745,14 +750,14 @@ class TestPortfolio:
         self.portfolio.update_account(state)
 
         order = self.order_factory.market(
-            BTCUSDT_BINANCE.id,
+            BTCUSDT_PERP_BINANCE.id,
             OrderSide.BUY,
             Quantity.from_str("10.000000"),
         )
 
         fill = TestEventStubs.order_filled(
             order=order,
-            instrument=BTCUSDT_BINANCE,
+            instrument=BTCUSDT_PERP_BINANCE,
             strategy_id=StrategyId("S-001"),
             account_id=account_id,
             position_id=PositionId("P-123456"),
@@ -760,7 +765,7 @@ class TestPortfolio:
         )
 
         last = Bar(
-            bar_type=BarType.from_str(f"{BTCUSDT_BINANCE.id}-1-MINUTE-LAST-EXTERNAL"),
+            bar_type=BarType.from_str(f"{BTCUSDT_PERP_BINANCE.id}-1-MINUTE-LAST-EXTERNAL"),
             open=Price.from_str("10510.00"),
             high=Price.from_str("10510.00"),
             low=Price.from_str("10510.00"),
@@ -772,7 +777,7 @@ class TestPortfolio:
 
         self.portfolio.update_bar(last)
 
-        position = Position(instrument=BTCUSDT_BINANCE, fill=fill)
+        position = Position(instrument=BTCUSDT_PERP_BINANCE, fill=fill)
 
         # Act
         self.cache.add_position(position, OmsType.HEDGING)
@@ -781,13 +786,13 @@ class TestPortfolio:
         # Assert
         assert self.portfolio.net_exposures(BINANCE) == {USDT: Money(105100.00000000, USDT)}
         assert self.portfolio.unrealized_pnls(BINANCE) == {USDT: Money(100.00000000, USDT)}
-        assert self.portfolio.realized_pnls(BINANCE) == {USDT: Money(-105.00000000, USDT)}
+        assert self.portfolio.realized_pnls(BINANCE) == {USDT: Money(-18.90000000, USDT)}
         assert self.portfolio.margins_maint(BINANCE) == {
-            BTCUSDT_BINANCE.id: Money(105.00000000, USDT),
+            BTCUSDT_PERP_BINANCE.id: Money(2_625.00000000, USDT),
         }
-        assert self.portfolio.net_exposure(BTCUSDT_BINANCE.id) == Money(105100.00000000, USDT)
-        assert self.portfolio.unrealized_pnl(BTCUSDT_BINANCE.id) == Money(100.00000000, USDT)
-        assert self.portfolio.realized_pnl(BTCUSDT_BINANCE.id) == Money(-105.00000000, USDT)
+        assert self.portfolio.net_exposure(BTCUSDT_PERP_BINANCE.id) == Money(105100.00000000, USDT)
+        assert self.portfolio.unrealized_pnl(BTCUSDT_PERP_BINANCE.id) == Money(100.00000000, USDT)
+        assert self.portfolio.realized_pnl(BTCUSDT_PERP_BINANCE.id) == Money(-18.90000000, USDT)
         assert self.portfolio.net_position(order.instrument_id) == Decimal("10.00000000")
         assert self.portfolio.is_net_long(order.instrument_id)
         assert not self.portfolio.is_net_short(order.instrument_id)
@@ -831,14 +836,14 @@ class TestPortfolio:
         self.portfolio.update_account(state)
 
         order = self.order_factory.market(
-            BTCUSDT_BINANCE.id,
+            BTCUSDT_PERP_BINANCE.id,
             OrderSide.SELL,
             Quantity.from_str("0.515"),
         )
 
         fill = TestEventStubs.order_filled(
             order=order,
-            instrument=BTCUSDT_BINANCE,
+            instrument=BTCUSDT_PERP_BINANCE,
             strategy_id=StrategyId("S-001"),
             account_id=account_id,
             position_id=PositionId("P-123456"),
@@ -846,7 +851,7 @@ class TestPortfolio:
         )
 
         last = QuoteTick(
-            instrument_id=BTCUSDT_BINANCE.id,
+            instrument_id=BTCUSDT_PERP_BINANCE.id,
             bid_price=Price.from_str("15510.15"),
             ask_price=Price.from_str("15510.25"),
             bid_size=Quantity.from_str("12.62"),
@@ -858,7 +863,7 @@ class TestPortfolio:
         self.cache.add_quote_tick(last)
         self.portfolio.update_quote_tick(last)
 
-        position = Position(instrument=BTCUSDT_BINANCE, fill=fill)
+        position = Position(instrument=BTCUSDT_PERP_BINANCE, fill=fill)
 
         # Act
         self.cache.add_position(position, OmsType.HEDGING)
@@ -867,12 +872,12 @@ class TestPortfolio:
         # Assert
         assert self.portfolio.net_exposures(BINANCE) == {USDT: Money(7987.77875000, USDT)}
         assert self.portfolio.unrealized_pnls(BINANCE) == {USDT: Money(-262.77875000, USDT)}
-        assert self.portfolio.realized_pnls(BINANCE) == {USDT: Money(-7.72500000, USDT)}
+        assert self.portfolio.realized_pnls(BINANCE) == {USDT: Money(-1.3905000, USDT)}
         assert self.portfolio.margins_maint(BINANCE) == {
-            BTCUSDT_BINANCE.id: Money(7.72500000, USDT),
+            BTCUSDT_PERP_BINANCE.id: Money(193.12500000, USDT),
         }
-        assert self.portfolio.net_exposure(BTCUSDT_BINANCE.id) == Money(7987.77875000, USDT)
-        assert self.portfolio.unrealized_pnl(BTCUSDT_BINANCE.id) == Money(-262.77875000, USDT)
+        assert self.portfolio.net_exposure(BTCUSDT_PERP_BINANCE.id) == Money(7987.77875000, USDT)
+        assert self.portfolio.unrealized_pnl(BTCUSDT_PERP_BINANCE.id) == Money(-262.77875000, USDT)
         assert self.portfolio.net_position(order.instrument_id) == Decimal("-0.515000")
         assert not self.portfolio.is_net_long(order.instrument_id)
         assert self.portfolio.is_net_short(order.instrument_id)
@@ -958,7 +963,7 @@ class TestPortfolio:
 
         # Assert
         assert self.portfolio.net_exposures(BITMEX) == {ETH: Money(26.59220848, ETH)}
-        assert self.portfolio.margins_maint(BITMEX) == {ETHUSD_BITMEX.id: Money(0.20608962, ETH)}
+        assert self.portfolio.margins_maint(BITMEX) == {ETHUSD_BITMEX.id: Money(0.18614546, ETH)}
         assert self.portfolio.net_exposure(ETHUSD_BITMEX.id) == Money(26.59220848, ETH)
         assert self.portfolio.unrealized_pnl(ETHUSD_BITMEX.id) == Money(0.00000000, ETH)
 
@@ -1337,8 +1342,8 @@ class TestPortfolio:
         assert self.portfolio.unrealized_pnls(SIM) == {USD: Money(10816.00, USD)}
         assert self.portfolio.realized_pnls(SIM) == {USD: Money(-4.00, USD)}
         assert self.portfolio.margins_maint(SIM) == {
-            AUDUSD_SIM.id: Money(3002.00, USD),
-            GBPUSD_SIM.id: Money(3002.00, USD),
+            AUDUSD_SIM.id: Money(3000.00, USD),
+            GBPUSD_SIM.id: Money(3000.00, USD),
         }
         assert self.portfolio.net_exposure(AUDUSD_SIM.id) == Money(80501.00, USD)
         assert self.portfolio.net_exposure(GBPUSD_SIM.id) == Money(130315.00, USD)
@@ -1439,7 +1444,7 @@ class TestPortfolio:
         assert self.portfolio.unrealized_pnls(SIM) == {USD: Money(-9749.50, USD)}
         assert self.portfolio.realized_pnls(SIM) == {USD: Money(-3.00, USD)}
         assert self.portfolio.total_pnls(SIM) == {USD: Money(-9752.50, USD)}
-        assert self.portfolio.margins_maint(SIM) == {AUDUSD_SIM.id: Money(1501.00, USD)}
+        assert self.portfolio.margins_maint(SIM) == {AUDUSD_SIM.id: Money(1500.00, USD)}
         assert self.portfolio.net_exposure(AUDUSD_SIM.id) == Money(40250.50, USD)
         assert self.portfolio.realized_pnl(AUDUSD_SIM.id) == Money(-3.00, USD)
         assert self.portfolio.unrealized_pnl(AUDUSD_SIM.id) == Money(-9749.50, USD)
@@ -1750,14 +1755,14 @@ class TestPortfolio:
         self.portfolio.update_quote_tick(last)
 
         # Assert
-        assert self.portfolio.net_exposures(BETFAIR) == {GBP: Money(200.00, GBP)}  # Stake * odds
-        assert self.portfolio.unrealized_pnls(BETFAIR) == {GBP: Money(-4.76, GBP)}
+        assert self.portfolio.net_exposures(BETFAIR) == {GBP: Money(-200.00, GBP)}  # Stake * odds
+        assert self.portfolio.unrealized_pnls(BETFAIR) == {GBP: Money(4.76, GBP)}
         assert self.portfolio.realized_pnls(BETFAIR) == {GBP: Money(0.00, GBP)}  # Commission
-        assert self.portfolio.net_exposure(BETTING_INSTRUMENT.id) == Money(200.00, GBP)
-        assert self.portfolio.unrealized_pnl(BETTING_INSTRUMENT.id) == Money(-4.76, GBP)
+        assert self.portfolio.net_exposure(BETTING_INSTRUMENT.id) == Money(-200.00, GBP)
+        assert self.portfolio.unrealized_pnl(BETTING_INSTRUMENT.id) == Money(4.76, GBP)
         assert self.portfolio.realized_pnl(BETTING_INSTRUMENT.id) == Money(0.00, GBP)
-        assert self.portfolio.total_pnl(BETTING_INSTRUMENT.id) == Money(-4.76, GBP)
-        assert self.portfolio.total_pnls(BETFAIR) == {GBP: Money(-4.76, GBP)}
+        assert self.portfolio.total_pnl(BETTING_INSTRUMENT.id) == Money(4.76, GBP)
+        assert self.portfolio.total_pnls(BETFAIR) == {GBP: Money(4.76, GBP)}
         assert self.portfolio.net_position(BETTING_INSTRUMENT.id) == Decimal("100.0")
         assert self.portfolio.is_net_long(BETTING_INSTRUMENT.id)
         assert not self.portfolio.is_net_short(BETTING_INSTRUMENT.id)
@@ -1860,14 +1865,497 @@ class TestPortfolio:
         # Assert
         assert self.portfolio.net_exposures(BETFAIR) == {}
         assert self.portfolio.unrealized_pnls(BETFAIR) == {GBP: Money(0.00, GBP)}
-        assert self.portfolio.realized_pnls(BETFAIR) == {GBP: Money(10.00, GBP)}
-        assert self.portfolio.net_exposure(BETTING_INSTRUMENT.id) == Money(0.00, GBP)
+        assert self.portfolio.realized_pnls(BETFAIR) == {GBP: Money(-10.00, GBP)}
+        assert self.portfolio.net_exposure(BETTING_INSTRUMENT.id) == Money(-20.00, GBP)
         assert self.portfolio.unrealized_pnl(BETTING_INSTRUMENT.id) == Money(0.00, GBP)
-        assert self.portfolio.realized_pnl(BETTING_INSTRUMENT.id) == Money(10.00, GBP)
-        assert self.portfolio.total_pnl(BETTING_INSTRUMENT.id) == Money(10.00, GBP)
-        assert self.portfolio.total_pnls(BETFAIR) == {GBP: Money(10.00, GBP)}
+        assert self.portfolio.realized_pnl(BETTING_INSTRUMENT.id) == Money(-10.00, GBP)
+        assert self.portfolio.total_pnl(BETTING_INSTRUMENT.id) == Money(-10.00, GBP)
+        assert self.portfolio.total_pnls(BETFAIR) == {GBP: Money(-10.00, GBP)}
         assert self.portfolio.net_position(BETTING_INSTRUMENT.id) == Decimal("0.0")
         assert not self.portfolio.is_net_long(BETTING_INSTRUMENT.id)
         assert not self.portfolio.is_net_short(BETTING_INSTRUMENT.id)
         assert self.portfolio.is_flat(BETTING_INSTRUMENT.id)
         assert self.portfolio.is_completely_flat()
+
+    @pytest.mark.parametrize(
+        (
+            "back_price",
+            "lay_price",
+            "back_size",
+            "lay_size",
+            "mark_price",
+            "expected_exposure",
+            "expected_realized",
+            "expected_unrealized",
+        ),
+        [
+            [2.0, 3.0, 100_000, 10_000, 3.0, -170_000.0, 0.0, 33_333.33],
+            [2.0, 3.0, 10_000, 100_000, 3.0, 280_000.0, 0.0, 3_333.33],
+            [2.0, 3.0, 50_000, 10_000, 3.0, -70_000.0, 0.0, 16_666.67],
+            [6.0, 2.0, 10_000, 50_000, 4.0, 40_000.0, 0.0, -30_000.0],
+            [3.0, 2.0, 10_000, 100_000, 3.0, 170_000, 0.0, -33_333.33],
+        ],
+    )
+    def test_betting_position_hedging_back_then_lay_open(
+        self,
+        back_price: float,
+        lay_price: float,
+        back_size: int,
+        lay_size: int,
+        mark_price: float,
+        expected_exposure: float,
+        expected_realized: float,
+        expected_unrealized: float,
+    ) -> None:
+        # Arrange
+        self.portfolio.set_specific_venue(Venue("BETFAIR"))
+        self.portfolio.set_use_mark_prices(True)
+        self.portfolio.set_use_mark_xrates(True)
+
+        AccountFactory.register_calculated_account("BETFAIR")
+        account_id = AccountId("BETFAIR-01234")
+        state = AccountState(
+            account_id=account_id,
+            account_type=AccountType.CASH,
+            base_currency=GBP,
+            reported=True,
+            balances=[
+                AccountBalance(
+                    total=Money(1_000_000, GBP),
+                    locked=Money(0, GBP),
+                    free=Money(1_000_000, GBP),
+                ),
+            ],
+            margins=[],
+            info={},
+            event_id=UUID4(),
+            ts_event=0,
+            ts_init=0,
+        )
+
+        instrument = TestInstrumentProvider.betting_instrument()
+        self.cache.add_instrument(instrument)
+        self.portfolio.update_account(state)
+
+        mark = MarkPriceUpdate(
+            instrument_id=instrument.id,
+            value=Price(mark_price, GBP.precision),
+            ts_event=0,
+            ts_init=1,
+        )
+        self.cache.add_mark_price(mark)
+
+        # Step 1: Place and fill a BACK bet (BUY)
+        order1 = self.order_factory.limit(
+            instrument_id=instrument.id,
+            order_side=OrderSide.BUY,  # BACK bet
+            quantity=Quantity.from_int(back_size),  # Stake
+            price=Price(back_price, GBP.precision),  # Odds
+        )
+        position_id1 = PositionId("1")
+        self.cache.add_order(order1, position_id=position_id1)
+        self.exec_engine.process(TestEventStubs.order_submitted(order1, account_id))
+        self.exec_engine.process(TestEventStubs.order_accepted(order1, account_id))
+
+        fill1 = TestEventStubs.order_filled(
+            order=order1,
+            instrument=instrument,
+            strategy_id=StrategyId("S-001"),
+            account_id=account_id,
+            position_id=position_id1,
+            last_px=Price(back_price, GBP.precision),
+        )
+        self.exec_engine.process(fill1)
+
+        # Step 2: Place and fill a LAY bet (SELL)
+        order2 = self.order_factory.limit(
+            instrument_id=instrument.id,
+            order_side=OrderSide.SELL,  # LAY bet
+            quantity=Quantity.from_int(lay_size),
+            price=Price(lay_price, GBP.precision),
+        )
+        position_id2 = PositionId("2")
+        self.cache.add_order(order2, position_id=position_id2)
+        self.exec_engine.process(TestEventStubs.order_submitted(order2, account_id))
+        self.exec_engine.process(TestEventStubs.order_accepted(order2, account_id))
+
+        fill2 = TestEventStubs.order_filled(
+            order=order2,
+            instrument=instrument,
+            strategy_id=StrategyId("S-001"),
+            account_id=account_id,
+            position_id=position_id2,
+            last_px=Price(lay_price, GBP.precision),
+        )
+        self.exec_engine.process(fill2)
+
+        # Assert
+        assert self.portfolio.net_exposure(instrument.id, mark.value) == Money(
+            expected_exposure,
+            GBP,
+        )
+        assert self.portfolio.realized_pnl(instrument.id) == Money(expected_realized, GBP)
+        assert self.portfolio.unrealized_pnl(instrument.id, mark.value) == Money(
+            expected_unrealized,
+            GBP,
+        )
+
+    @pytest.mark.parametrize(
+        (
+            "back_price",
+            "lay_price",
+            "back_size",
+            "lay_size",
+            "mark_price",
+            "expected_exposure",
+            "expected_realized",
+            "expected_unrealized",
+        ),
+        [
+            [3.0, 2.0, 10_000, 100_000, 3.0, 170_000, 0, -33_333.33],
+            [2.0, 3.0, 100_000, 10_000, 3.0, -170_000, 0, 33_333.33],
+        ],
+    )
+    def test_betting_position_hedging_lay_then_back_open(
+        self,
+        back_price: float,
+        lay_price: float,
+        back_size: int,
+        lay_size: int,
+        mark_price: float,
+        expected_exposure: float,
+        expected_realized: float,
+        expected_unrealized: float,
+    ) -> None:
+        # Arrange
+        self.portfolio.set_specific_venue(Venue("BETFAIR"))
+        self.portfolio.set_use_mark_prices(True)
+        self.portfolio.set_use_mark_xrates(True)
+
+        AccountFactory.register_calculated_account("BETFAIR")
+        account_id = AccountId("BETFAIR-01234")
+        state = AccountState(
+            account_id=account_id,
+            account_type=AccountType.CASH,
+            base_currency=GBP,
+            reported=True,
+            balances=[
+                AccountBalance(
+                    total=Money(1_000_000, GBP),
+                    locked=Money(0, GBP),
+                    free=Money(1_000_000, GBP),
+                ),
+            ],
+            margins=[],
+            info={},
+            event_id=UUID4(),
+            ts_event=0,
+            ts_init=0,
+        )
+
+        instrument = TestInstrumentProvider.betting_instrument()
+        self.cache.add_instrument(instrument)
+        self.portfolio.update_account(state)
+
+        mark = MarkPriceUpdate(
+            instrument_id=instrument.id,
+            value=Price(mark_price, GBP.precision),
+            ts_event=0,
+            ts_init=1,
+        )
+        self.cache.add_mark_price(mark)
+
+        # Step 1: Place and fill a LAY bet (SELL)
+        order1 = self.order_factory.limit(
+            instrument_id=instrument.id,
+            order_side=OrderSide.SELL,  # LAY bet
+            quantity=Quantity.from_int(lay_size),
+            price=Price(lay_price, GBP.precision),
+        )
+        position_id1 = PositionId("1")
+        self.cache.add_order(order1, position_id=position_id1)
+        self.exec_engine.process(TestEventStubs.order_submitted(order1, account_id))
+        self.exec_engine.process(TestEventStubs.order_accepted(order1, account_id))
+
+        fill1 = TestEventStubs.order_filled(
+            order=order1,
+            instrument=instrument,
+            account_id=account_id,
+            position_id=position_id1,
+            last_px=Price(lay_price, GBP.precision),
+        )
+        self.exec_engine.process(fill1)
+
+        # Step 2: Place and fill a BACK bet (BUY)
+        order2 = self.order_factory.limit(
+            instrument_id=instrument.id,
+            order_side=OrderSide.BUY,  # BACK bet
+            quantity=Quantity.from_int(back_size),  # Stake
+            price=Price(back_price, GBP.precision),  # Odds
+        )
+        position_id2 = PositionId("2")
+        self.cache.add_order(order2, position_id=position_id2)
+        self.exec_engine.process(TestEventStubs.order_submitted(order2, account_id))
+        self.exec_engine.process(TestEventStubs.order_accepted(order2, account_id))
+
+        fill2 = TestEventStubs.order_filled(
+            order=order2,
+            instrument=instrument,
+            account_id=account_id,
+            position_id=position_id2,
+            last_px=Price(back_price, GBP.precision),
+        )
+        self.exec_engine.process(fill2)
+
+        # Assert
+        assert self.portfolio.net_exposure(instrument.id, mark.value) == Money(
+            expected_exposure,
+            GBP,
+        )
+        assert self.portfolio.realized_pnl(instrument.id) == Money(expected_realized, GBP)
+        assert self.portfolio.unrealized_pnl(instrument.id, mark.value) == Money(
+            expected_unrealized,
+            GBP,
+        )
+
+    @pytest.mark.parametrize(
+        (
+            "side",
+            "open_price",
+            "close_price",
+            "size",
+            "mark_price",
+            "expected_exposure",
+            "expected_realized",
+            "expected_unrealized",
+        ),
+        [
+            [OrderSide.BUY, 3.0, 3.0, 100_000, 3.0, 0.0, 0.0, 0.0],
+            [OrderSide.BUY, 3.0, 2.0, 100_000, 1.0, -100_000.0, 0.0, -100_000.0],
+            [OrderSide.SELL, 3.0, 3.0, 100_000, 3.0, 0.0, 0.0, 0.0],
+            [OrderSide.SELL, 3.0, 2.0, 100_000, 1.0, 100_000.0, 0.0, 100_000.0],
+        ],
+    )
+    def test_betting_position_hedging_close(
+        self,
+        side: OrderSide,
+        open_price: float,
+        close_price: float,
+        size: int,
+        mark_price: float,
+        expected_exposure: float,
+        expected_realized: float,
+        expected_unrealized: float,
+    ) -> None:
+        # Arrange
+        self.portfolio.set_specific_venue(Venue("BETFAIR"))
+        self.portfolio.set_use_mark_prices(True)
+        self.portfolio.set_use_mark_xrates(True)
+
+        AccountFactory.register_calculated_account("BETFAIR")
+        account_id = AccountId("BETFAIR-01234")
+        state = AccountState(
+            account_id=account_id,
+            account_type=AccountType.CASH,
+            base_currency=GBP,
+            reported=True,
+            balances=[
+                AccountBalance(
+                    total=Money(1_000_000, GBP),
+                    locked=Money(0, GBP),
+                    free=Money(1_000_000, GBP),
+                ),
+            ],
+            margins=[],
+            info={},
+            event_id=UUID4(),
+            ts_event=0,
+            ts_init=0,
+        )
+
+        instrument = TestInstrumentProvider.betting_instrument()
+        self.cache.add_instrument(instrument)
+        self.portfolio.update_account(state)
+
+        mark = MarkPriceUpdate(
+            instrument_id=instrument.id,
+            value=Price(mark_price, GBP.precision),
+            ts_event=0,
+            ts_init=1,
+        )
+        self.cache.add_mark_price(mark)
+
+        # Step 1: Place opening bet
+        order1 = self.order_factory.limit(
+            instrument_id=instrument.id,
+            order_side=side,
+            quantity=Quantity.from_int(size),
+            price=Price(open_price, GBP.precision),
+        )
+        position_id1 = PositionId("1")
+        self.cache.add_order(order1, position_id=position_id1)
+        self.exec_engine.process(TestEventStubs.order_submitted(order1, account_id))
+        self.exec_engine.process(TestEventStubs.order_accepted(order1, account_id))
+
+        fill1 = TestEventStubs.order_filled(
+            order=order1,
+            instrument=instrument,
+            strategy_id=StrategyId("S-001"),
+            account_id=account_id,
+            position_id=position_id1,
+            last_px=Price(open_price, GBP.precision),
+        )
+        self.exec_engine.process(fill1)
+
+        # Step 2: Place closing bet
+        order2 = self.order_factory.limit(
+            instrument_id=instrument.id,
+            order_side=OrderSide.SELL if side == OrderSide.BUY else OrderSide.BUY,
+            quantity=Quantity.from_int(size),  # Stake
+            price=Price(close_price, GBP.precision),
+        )
+        position_id2 = PositionId("2")
+        self.cache.add_order(order2, position_id=position_id2)
+        self.exec_engine.process(TestEventStubs.order_submitted(order2, account_id))
+        self.exec_engine.process(TestEventStubs.order_accepted(order2, account_id))
+
+        fill2 = TestEventStubs.order_filled(
+            order=order2,
+            instrument=instrument,
+            strategy_id=StrategyId("S-001"),
+            account_id=account_id,
+            position_id=position_id2,
+            last_px=Price(close_price, GBP.precision),
+        )
+        self.exec_engine.process(fill2)
+
+        # Assert
+        assert self.portfolio.net_exposure(instrument.id, mark.value) == Money(
+            expected_exposure,
+            GBP,
+        )
+        assert self.portfolio.realized_pnl(instrument.id) == Money(expected_realized, GBP)
+        assert self.portfolio.unrealized_pnl(instrument.id, mark.value) == Money(
+            expected_unrealized,
+            GBP,
+        )
+
+    @pytest.mark.parametrize(
+        (
+            "side",
+            "open_price",
+            "close_price",
+            "size",
+            "mark_price",
+            "expected_exposure",
+            "expected_realized",
+            "expected_unrealized",
+        ),
+        [
+            [OrderSide.BUY, 3.0, 3.0, 100_000, 3.0, 0.0, 0.0, 0.0],
+            [OrderSide.BUY, 3.0, 2.0, 100_000, 1.0, 0.0, -33_333.33, 0.0],
+            [OrderSide.SELL, 3.0, 3.0, 100_000, 3.0, 0.0, 0.0, 0.0],
+            [OrderSide.SELL, 3.0, 2.0, 100_000, 1.0, 0.0, 33_333.33, 0.0],
+        ],
+    )
+    def test_betting_position_netting_close(
+        self,
+        side: OrderSide,
+        open_price: float,
+        close_price: float,
+        size: int,
+        mark_price: float,
+        expected_exposure: float,
+        expected_realized: float,
+        expected_unrealized: float,
+    ) -> None:
+        # Arrange
+        self.portfolio.set_specific_venue(Venue("BETFAIR"))
+        self.portfolio.set_use_mark_prices(True)
+        self.portfolio.set_use_mark_xrates(True)
+
+        AccountFactory.register_calculated_account("BETFAIR")
+        account_id = AccountId("BETFAIR-01234")
+        state = AccountState(
+            account_id=account_id,
+            account_type=AccountType.CASH,
+            base_currency=GBP,
+            reported=True,
+            balances=[
+                AccountBalance(
+                    total=Money(1_000_000, GBP),
+                    locked=Money(0, GBP),
+                    free=Money(1_000_000, GBP),
+                ),
+            ],
+            margins=[],
+            info={},
+            event_id=UUID4(),
+            ts_event=0,
+            ts_init=0,
+        )
+
+        instrument = TestInstrumentProvider.betting_instrument()
+        self.cache.add_instrument(instrument)
+        self.portfolio.update_account(state)
+
+        mark = MarkPriceUpdate(
+            instrument_id=instrument.id,
+            value=Price(mark_price, GBP.precision),
+            ts_event=0,
+            ts_init=1,
+        )
+        self.cache.add_mark_price(mark)
+
+        # Step 1: Place opening bet
+        order1 = self.order_factory.limit(
+            instrument_id=instrument.id,
+            order_side=side,
+            quantity=Quantity.from_int(size),
+            price=Price(open_price, GBP.precision),
+        )
+        self.cache.add_order(order1, position_id=None)
+        self.exec_engine.process(TestEventStubs.order_submitted(order1, account_id))
+        self.exec_engine.process(TestEventStubs.order_accepted(order1, account_id))
+
+        fill1 = TestEventStubs.order_filled(
+            order=order1,
+            instrument=instrument,
+            strategy_id=StrategyId("S-001"),
+            account_id=account_id,
+            position_id=None,
+            last_px=Price(open_price, GBP.precision),
+        )
+        self.exec_engine.process(fill1)
+
+        # Step 2: Place closing bet
+        order2 = self.order_factory.limit(
+            instrument_id=instrument.id,
+            order_side=OrderSide.SELL if side == OrderSide.BUY else OrderSide.BUY,
+            quantity=Quantity.from_int(size),  # Stake
+            price=Price(close_price, GBP.precision),
+        )
+        self.cache.add_order(order2, position_id=None)
+        self.exec_engine.process(TestEventStubs.order_submitted(order2, account_id))
+        self.exec_engine.process(TestEventStubs.order_accepted(order2, account_id))
+
+        fill2 = TestEventStubs.order_filled(
+            order=order2,
+            instrument=instrument,
+            strategy_id=StrategyId("S-001"),
+            account_id=account_id,
+            position_id=None,
+            last_px=Price(close_price, GBP.precision),
+        )
+        self.exec_engine.process(fill2)
+
+        # Assert
+        assert self.portfolio.net_exposure(instrument.id, mark.value) == Money(
+            expected_exposure,
+            GBP,
+        )
+        assert self.portfolio.realized_pnl(instrument.id) == Money(expected_realized, GBP)
+        assert self.portfolio.unrealized_pnl(instrument.id, mark.value) == Money(
+            expected_unrealized,
+            GBP,
+        )

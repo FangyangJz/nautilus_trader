@@ -16,11 +16,12 @@
 
 from decimal import Decimal
 
-from nautilus_trader.adapters.binance.common.enums import BinanceAccountType
-from nautilus_trader.adapters.binance.config import BinanceDataClientConfig
-from nautilus_trader.adapters.binance.config import BinanceExecClientConfig
-from nautilus_trader.adapters.binance.factories import BinanceLiveDataClientFactory
-from nautilus_trader.adapters.binance.factories import BinanceLiveExecClientFactory
+from nautilus_trader.adapters.binance import BINANCE
+from nautilus_trader.adapters.binance import BinanceAccountType
+from nautilus_trader.adapters.binance import BinanceDataClientConfig
+from nautilus_trader.adapters.binance import BinanceExecClientConfig
+from nautilus_trader.adapters.binance import BinanceLiveDataClientFactory
+from nautilus_trader.adapters.binance import BinanceLiveExecClientFactory
 from nautilus_trader.config import CacheConfig
 from nautilus_trader.config import InstrumentProviderConfig
 from nautilus_trader.config import LiveExecEngineConfig
@@ -51,7 +52,7 @@ config_node = TradingNodeConfig(
         use_pyo3=True,
     ),
     data_engine=LiveDataEngineConfig(
-        external_clients=[ClientId("BYBIT")],
+        external_clients=[ClientId(BINANCE)],
     ),
     exec_engine=LiveExecEngineConfig(
         reconciliation=True,
@@ -76,7 +77,7 @@ config_node = TradingNodeConfig(
     # ),
     # streaming=StreamingConfig(catalog_path="catalog"),
     data_clients={
-        "BINANCE": BinanceDataClientConfig(
+        BINANCE: BinanceDataClientConfig(
             api_key=None,  # 'BINANCE_API_KEY' env var
             api_secret=None,  # 'BINANCE_API_SECRET' env var
             account_type=BinanceAccountType.USDT_FUTURE,
@@ -88,7 +89,7 @@ config_node = TradingNodeConfig(
         ),
     },
     exec_clients={
-        "BINANCE": BinanceExecClientConfig(
+        BINANCE: BinanceExecClientConfig(
             api_key=None,  # 'BINANCE_API_KEY' env var
             api_secret=None,  # 'BINANCE_API_SECRET' env var
             account_type=BinanceAccountType.USDT_FUTURE,
@@ -98,7 +99,8 @@ config_node = TradingNodeConfig(
             testnet=True,  # If client uses the testnet
             instrument_provider=InstrumentProviderConfig(load_all=True),
             max_retries=3,
-            retry_delay=1.0,
+            retry_delay_initial_ms=1_000,
+            retry_delay_max_ms=10_000,
         ),
     },
     timeout_connection=30.0,
@@ -118,7 +120,7 @@ strat_config = VolatilityMarketMakerConfig(
     bar_type=BarType.from_str("ETHUSDT-PERP.BINANCE-1-MINUTE-LAST-EXTERNAL"),
     atr_period=20,
     atr_multiple=6.0,
-    trade_size=Decimal("0.010"),
+    trade_size=Decimal("0.020"),
     # manage_gtd_expiry=True,
 )
 # Instantiate your strategy
@@ -128,8 +130,8 @@ strategy = VolatilityMarketMaker(config=strat_config)
 node.trader.add_strategy(strategy)
 
 # Register your client factories with the node (can take user-defined factories)
-node.add_data_client_factory("BINANCE", BinanceLiveDataClientFactory)
-node.add_exec_client_factory("BINANCE", BinanceLiveExecClientFactory)
+node.add_data_client_factory(BINANCE, BinanceLiveDataClientFactory)
+node.add_exec_client_factory(BINANCE, BinanceLiveExecClientFactory)
 node.build()
 
 

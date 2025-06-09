@@ -19,8 +19,8 @@ import functools
 from ibapi import comm
 from ibapi import decoder
 from ibapi.client import EClient
-from ibapi.common import NO_VALID_ID
 from ibapi.connection import Connection
+from ibapi.const import NO_VALID_ID
 from ibapi.errors import CONNECT_FAIL
 from ibapi.server_versions import MAX_CLIENT_VER
 from ibapi.server_versions import MIN_CLIENT_VER
@@ -70,7 +70,7 @@ class InteractiveBrokersClientConnectionMixin(BaseMixin):
             self._log.info("Connection cancelled.")
             await self._disconnect()
         except Exception as e:
-            self._log.error(f"Connection failed: {e}")
+            self._log.exception("Connection failed", e)
             if self._eclient.wrapper:
                 self._eclient.wrapper.error(NO_VALID_ID, CONNECT_FAIL.code(), CONNECT_FAIL.msg())
             await self._handle_reconnect()
@@ -81,12 +81,14 @@ class InteractiveBrokersClientConnectionMixin(BaseMixin):
         """
         try:
             self._eclient.disconnect()
+
             if self._is_ib_connected.is_set():
                 self._log.debug("`_is_ib_connected` unset by `_disconnect`.", LogColor.BLUE)
                 self._is_ib_connected.clear()
+
             self._log.info("Disconnected from Interactive Brokers API.")
         except Exception as e:
-            self._log.error(f"Disconnection failed: {e}")
+            self._log.exception("Disconnection failed", e)
 
     async def _handle_reconnect(self) -> None:
         """
@@ -133,8 +135,10 @@ class InteractiveBrokersClientConnectionMixin(BaseMixin):
         """
         v100prefix = "API\0"
         v100version = f"v{MIN_CLIENT_VER}..{MAX_CLIENT_VER}"
-        if self._eclient.connectionOptions:
-            v100version += f" {self._eclient.connectionOptions}"
+
+        if self._eclient.connectOptions:
+            v100version += f" {self._eclient.connectOptions}"
+
         msg = comm.make_msg(v100version)
         msg2 = str.encode(v100prefix, "ascii") + msg
         await asyncio.to_thread(functools.partial(self._eclient.conn.sendMsg, msg2))
@@ -157,6 +161,7 @@ class InteractiveBrokersClientConnectionMixin(BaseMixin):
 
         while retries_remaining > 0:
             buf = await asyncio.to_thread(self._eclient.conn.recvMsg)
+
             if len(buf) > 0:
                 _, msg, _ = comm.read_msg(buf)
                 fields.extend(comm.read_fields(msg))
@@ -208,6 +213,7 @@ class InteractiveBrokersClientConnectionMixin(BaseMixin):
         for future in self._requests.get_futures():
             if not future.done():
                 future.set_exception(ConnectionError("Socket disconnected."))
+
         if self._is_ib_connected.is_set():
             self._log.debug("`_is_ib_connected` unset by `connectionClosed`.", LogColor.BLUE)
             self._is_ib_connected.clear()

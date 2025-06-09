@@ -128,27 +128,32 @@ VENUES_CFD = [
 ]
 VENUES_CMDTY = ["IBCMDTY"]  # self named, in fact mapping to "SMART" when parsing
 
-RE_CASH = re.compile(r"^(?P<symbol>[A-Z]{3})\/(?P<currency>[A-Z]{3})$")
-RE_CFD_CASH = re.compile(r"^(?P<symbol>[A-Z]{3})\.(?P<currency>[A-Z]{3})$")
+RE_CASH = re.compile(r"^(?P<symbol>[A-Z]{3})\/(?P<currency>[A-Z]{3})$")  # "EUR/USD"
+RE_CFD_CASH = re.compile(r"^(?P<symbol>[A-Z]{3})\.(?P<currency>[A-Z]{3})$")  # "EUR.USD"
 RE_OPT = re.compile(
     r"^(?P<symbol>^[A-Z. ]{1,6})(?P<expiry>\d{6})(?P<right>[CP])(?P<strike>\d{5})(?P<decimal>\d{3})$",
-)
-RE_FUT_UNDERLYING = re.compile(r"^(?P<symbol>\w{1,3})$")
-RE_FUT = re.compile(r"^(?P<symbol>\w{1,3})(?P<month>[FGHJKMNQUVXZ])(?P<year>\d{2})$")
-RE_FUT_ORIGINAL = re.compile(r"^(?P<symbol>\w{1,3})(?P<month>[FGHJKMNQUVXZ])(?P<year>\d)$")
+)  # "AAPL220617C00155000"
+RE_FUT_UNDERLYING = re.compile(r"^(?P<symbol>\w{1,3})$")  # "ES"
+RE_FUT = re.compile(r"^(?P<symbol>\w{1,3})(?P<month>[FGHJKMNQUVXZ])(?P<year>\d{2})$")  # "ESM23"
+RE_FUT_ORIGINAL = re.compile(
+    r"^(?P<symbol>\w{1,3})(?P<month>[FGHJKMNQUVXZ])(?P<year>\d)$",
+)  # "ESM3"
 RE_FUT2 = re.compile(
     r"^(?P<symbol>\w{1,4})(?P<month>(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC))(?P<year>\d{2})$",
-)
+)  # "ESMAR23"
 RE_FUT2_ORIGINAL = re.compile(
     r"^(?P<symbol>\w{1,4}) *(?P<month>(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)) (?P<year>\d{2})$",
-)
+)  # "ES MAR 23"
+RE_FUT3_ORIGINAL = re.compile(
+    r"^(?P<symbol>[A-Z]+)(?P<year>\d{2})(?P<month>(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC))FUT$",
+)  # "NIFTY25MARFUT"
 RE_FOP = re.compile(
     r"^(?P<symbol>\w{1,3})(?P<month>[FGHJKMNQUVXZ])(?P<year>\d{2})(?P<right>[CP])(?P<strike>.{4,5})$",
-)
+)  # "ESM23C4200"
 RE_FOP_ORIGINAL = re.compile(
     r"^(?P<symbol>\w{1,3})(?P<month>[FGHJKMNQUVXZ])(?P<year>\d)\s(?P<right>[CP])(?P<strike>\d{1,4}(?:\.\d)?)$",
-)
-RE_CRYPTO = re.compile(r"^(?P<symbol>[A-Z]*)\/(?P<currency>[A-Z]{3})$")
+)  # "ESM3 C4420"
+RE_CRYPTO = re.compile(r"^(?P<symbol>[A-Z]*)\/(?P<currency>[A-Z]{3})$")  # "BTC/USD"
 
 
 def _extract_isin(details: IBContractDetails) -> int:
@@ -156,11 +161,13 @@ def _extract_isin(details: IBContractDetails) -> int:
         for tag_value in details.secIdList:
             if tag_value.tag == "ISIN":
                 return tag_value.value
+
     raise ValueError("No ISIN found")
 
 
 def _tick_size_to_precision(tick_size: float | Decimal) -> int:
     tick_size_str = f"{tick_size:.10f}"
+
     return len(tick_size_str.partition(".")[2].rstrip("0"))
 
 
@@ -173,12 +180,14 @@ def sec_type_to_asset_class(sec_type: str) -> AssetClass:
         "CMDTY": "COMMODITY",
         "FUT": "INDEX",
     }
+
     return asset_class_from_str(mapping.get(sec_type, sec_type))
 
 
 def contract_details_to_ib_contract_details(details: ContractDetails) -> IBContractDetails:
     details.contract = IBContract(**details.contract.__dict__)
     details = IBContractDetails(**details.__dict__)
+
     return details
 
 
@@ -193,6 +202,7 @@ def parse_instrument(
         symbology_method=symbology_method,
         databento_venue=databento_venue,
     )
+
     if security_type == "STK":
         return parse_equity_contract(details=contract_details, instrument_id=instrument_id)
     elif security_type == "IND":
@@ -216,10 +226,12 @@ def parse_instrument(
 def contract_details_to_dict(details: IBContractDetails) -> dict:
     dict_details = details.dict().copy()
     dict_details["contract"] = details.contract.dict().copy()
+
     if dict_details.get("secIdList"):
         dict_details["secIdList"] = {
             tag_value.tag: tag_value.value for tag_value in dict_details["secIdList"]
         }
+
     return dict_details
 
 
@@ -416,6 +428,7 @@ def parse_cfd_contract(
     price_precision: int = _tick_size_to_precision(details.minTick)
     size_precision: int = _tick_size_to_precision(details.minSize)
     timestamp = time.time_ns()
+
     if RE_CFD_CASH.match(details.contract.localSymbol):
         return Cfd(
             instrument_id=instrument_id,
@@ -476,6 +489,7 @@ def parse_commodity_contract(
     price_precision: int = _tick_size_to_precision(details.minTick)
     size_precision: int = _tick_size_to_precision(details.minSize)
     timestamp = time.time_ns()
+
     return Commodity(
         instrument_id=instrument_id,
         raw_symbol=Symbol(details.contract.localSymbol),
@@ -546,6 +560,7 @@ def ib_contract_to_instrument_id_simplified_symbology(  # noqa: C901 (too comple
     contract: IBContract,
 ) -> InstrumentId:
     security_type = contract.secType
+
     if security_type == "STK":
         symbol = (contract.localSymbol or contract.symbol).replace(" ", "-")
         venue = contract.primaryExchange if contract.exchange == "SMART" else contract.exchange
@@ -559,6 +574,9 @@ def ib_contract_to_instrument_id_simplified_symbology(  # noqa: C901 (too comple
         symbol = f"{m['symbol']}{m['month']}{decade_digit(m['year'], contract)}{m['year']}"
         venue = contract.exchange
     elif security_type == "FUT" and (m := RE_FUT2_ORIGINAL.match(contract.localSymbol)):
+        symbol = f"{m['symbol']}{FUTURES_MONTH_TO_CODE[m['month']]}{m['year']}"
+        venue = contract.exchange
+    elif security_type == "FUT" and (m := RE_FUT3_ORIGINAL.match(contract.localSymbol)):
         symbol = f"{m['symbol']}{FUTURES_MONTH_TO_CODE[m['month']]}{m['year']}"
         venue = contract.exchange
     elif security_type == "FOP" and (m := RE_FOP_ORIGINAL.match(contract.localSymbol)):
@@ -587,6 +605,7 @@ def ib_contract_to_instrument_id_simplified_symbology(  # noqa: C901 (too comple
         venue = None
     if symbol and venue:
         return InstrumentId(Symbol(symbol), Venue(venue))
+
     raise ValueError(f"Unknown {contract=}")
 
 

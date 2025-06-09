@@ -2,9 +2,7 @@
 
 For development we recommend using the PyCharm *Professional* edition IDE, as it interprets Cython syntax. Alternatively, you could use Visual Studio Code with a Cython extension.
 
-[pyenv](https://github.com/pyenv/pyenv) is the recommended tool for handling Python installations and virtual environments.
-
-[poetry](https://python-poetry.org/) is the preferred tool for handling all Python package and dev dependencies.
+[uv](https://docs.astral.sh/uv) is the preferred tool for handling all Python virtual environments and dependencies.
 
 [pre-commit](https://pre-commit.com/) is used to automatically run various checks, auto-formatters and linting tools at commit.
 
@@ -15,40 +13,117 @@ NautilusTrader uses increasingly more [Rust](https://www.rust-lang.org), so Rust
 
 The following steps are for UNIX-like systems, and only need to be completed once.
 
-1. Follow the [installation guide](../getting_started/installation.md) to set up the project with a modification to the final poetry command:
+1. Follow the [installation guide](../getting_started/installation.md) to set up the project with a modification to the final command to install development and test dependencies:
 
-       poetry install
+```bash
+uv sync --active --all-groups --all-extras
+```
+
+or
+
+```bash
+make install
+```
+
+If you're developing and iterating frequently, then compiling in debug mode is often sufficient and *significantly* faster than a fully optimized build.
+To install in debug mode, use:
+
+```bash
+make install-debug
+```
 
 2. Set up the pre-commit hook which will then run automatically at commit:
 
-       pre-commit install
+```bash
+pre-commit install
+```
 
-3. In case of large recompiles for small changes, configure the `PYO3_PYTHON` variable in `nautilus_trader/.cargo/config.toml` with the path to the Python interpreter in the poetry managed environment. This is primarily useful for Rust developers working on core and experience frequent recompiles from IDE/rust analyzer based `cargo check`.
+3. **Optional**: For frequent Rust development, configure the `PYO3_PYTHON` variable in `.cargo/config.toml` with the path to the Python interpreter. This helps reduce recompilation times for IDE/rust-analyzer based `cargo check`:
 
-    ```
-    poetry shell
-    PYTHON_PATH=$(which python)
-    echo -e "\n[env]\nPYO3_PYTHON = \"$PYTHON_PATH\"" >> .cargo/config.toml
-    ```
+```bash
+PYTHON_PATH=$(which python)
+echo -e "\n[env]\nPYO3_PYTHON = \"$PYTHON_PATH\"" >> .cargo/config.toml
+```
 
-    Since `.cargo/config.toml` is a tracked file, configure git to skip local modifications to it with `git update-index --skip-worktree .cargo/config.toml`. Git will still pull remote modifications. To push modifications track local modifications using `git update-index --no-skip-worktree .cargo/config.toml`.
+Since `.cargo/config.toml` is tracked, configure git to skip any local modifications:
 
-    The git hack is needed till [local cargo config](https://github.com/rust-lang/cargo/issues/7723) feature is merged.
+```bash
+git update-index --skip-worktree .cargo/config.toml
+```
+
+To restore tracking: `git update-index --no-skip-worktree .cargo/config.toml`
 
 ## Builds
 
 Following any changes to `.rs`, `.pyx` or `.pxd` files, you can re-compile by running:
 
-    poetry run python build.py
+```bash
+uv run --no-sync python build.py
+```
 
 or
 
-    make build
+```bash
+make build
+```
 
 If you're developing and iterating frequently, then compiling in debug mode is often sufficient and *significantly* faster than a fully optimized build.
 To compile in debug mode, use:
 
-    make build-debug
+```bash
+make build-debug
+```
+
+## Faster builds 🏁
+
+The cranelift backends reduces build time significantly for dev, testing and IDE checks. However, cranelift is available on the nightly toolchain and needs extra configuration. Install the nightly toolchain
+
+```
+rustup install nightly
+rustup override set nightly
+rustup component add rust-analyzer # install nightly lsp
+rustup override set stable # reset to stable
+```
+
+Activate the nightly feature and use "cranelift" backend for dev and testing profiles in workspace `Cargo.toml`. You can apply the below patch using `git apply <patch>`. You can remove it using `git apply -R <patch>` before pushing changes.
+
+```
+diff --git a/Cargo.toml b/Cargo.toml
+index 62b78cd8d0..beb0800211 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -1,3 +1,6 @@
++# This line needs to come before anything else in Cargo.toml
++cargo-features = ["codegen-backend"]
++
+ [workspace]
+ resolver = "2"
+ members = [
+@@ -140,6 +143,7 @@ lto = false
+ panic = "unwind"
+ incremental = true
+ codegen-units = 256
++codegen-backend = "cranelift"
+
+ [profile.test]
+ opt-level = 0
+@@ -150,11 +154,13 @@ strip = false
+ lto = false
+ incremental = true
+ codegen-units = 256
++codegen-backend = "cranelift"
+
+ [profile.nextest]
+ inherits = "test"
+ debug = false # Improves compile times
+ strip = "debuginfo" # Improves compile times
++codegen-backend = "cranelift"
+
+ [profile.release]
+ opt-level = 3
+```
+
+Pass `RUSTUP_TOOLCHAIN=nightly` when running `make build-debug` like commands and include it in in all [rust analyzer settings](#rust-analyzer-settings) for faster builds and IDE checks.
 
 ## Services
 
@@ -144,3 +219,79 @@ List of commands are:
 
 1. `nautilus database init`: Will bootstrap schema, roles and all sql files located in `schema` root directory (like `tables.sql`)
 2. `nautilus database drop`: Will drop all tables, roles and data in target Postgres database
+
+## Rust analyzer settings
+
+Rust analyzer is a popular language server for Rust and has integrations for many IDEs. It is recommended to configure rust analyzer to have same environment variables as `make build-debug` for faster compile times. Below tested configurations for VSCode and Astro Nvim are provided. For more information see [PR](https://github.com/nautechsystems/nautilus_trader/pull/2524) or rust analyzer [config docs](https://rust-analyzer.github.io/book/configuration.html).
+
+### VSCode
+
+You can add the following settings to your VSCode `settings.json` file:
+
+```
+    "rust-analyzer.restartServerOnConfigChange": true,
+    "rust-analyzer.linkedProjects": [
+        "Cargo.toml"
+    ],
+    "rust-analyzer.cargo.features": "all",
+    "rust-analyzer.check.workspace": false,
+    "rust-analyzer.check.extraEnv": {
+        "VIRTUAL_ENV": "<path-to-your-virtual-environment>/.venv",
+        "CC": "clang",
+        "CXX": "clang++"
+    },
+    "rust-analyzer.cargo.extraEnv": {
+        "VIRTUAL_ENV": "<path-to-your-virtual-environment>/.venv",
+        "CC": "clang",
+        "CXX": "clang++"
+    },
+    "rust-analyzer.runnables.extraEnv": {
+        "VIRTUAL_ENV": "<path-to-your-virtual-environment>/.venv",
+        "CC": "clang",
+        "CXX": "clang++"
+    },
+    "rust-analyzer.check.features": "all",
+    "rust-analyzer.testExplorer": true
+```
+
+### Astro Nvim (Neovim + AstroLSP)
+
+You can add the following to your astro lsp config file:
+
+```
+    config = {
+      rust_analyzer = {
+        settings = {
+          ["rust-analyzer"] = {
+            restartServerOnConfigChange = true,
+            linkedProjects = { "Cargo.toml" },
+            cargo = {
+              features = "all",
+              extraEnv = {
+                VIRTUAL_ENV = "<path-to-your-virtual-environment>/.venv",
+                CC = "clang",
+                CXX = "clang++",
+              },
+            },
+            check = {
+              workspace = false,
+              command = "check",
+              features = "all",
+              extraEnv = {
+                VIRTUAL_ENV = "<path-to-your-virtual-environment>/.venv",
+                CC = "clang",
+                CXX = "clang++",
+              },
+            },
+            runnables = {
+              extraEnv = {
+                VIRTUAL_ENV = "<path-to-your-virtual-environment>/.venv",
+                CC = "clang",
+                CXX = "clang++",
+              },
+            },
+            testExplorer = true,
+          },
+        },
+      },
+```

@@ -15,6 +15,7 @@
 
 from decimal import Decimal
 
+from libc.math cimport floor
 from libc.math cimport pow
 from libc.stdint cimport uint64_t
 
@@ -33,6 +34,7 @@ from nautilus_trader.model.identifiers cimport InstrumentId
 from nautilus_trader.model.instruments.betting cimport BettingInstrument
 from nautilus_trader.model.instruments.binary_option cimport BinaryOption
 from nautilus_trader.model.instruments.crypto_future cimport CryptoFuture
+from nautilus_trader.model.instruments.crypto_option cimport CryptoOption
 from nautilus_trader.model.instruments.crypto_perpetual cimport CryptoPerpetual
 from nautilus_trader.model.instruments.currency_pair cimport CurrencyPair
 from nautilus_trader.model.instruments.equity cimport Equity
@@ -79,9 +81,9 @@ cdef class Instrument(Data):
         The price decimal precision.
     size_precision : int
         The trading size decimal precision.
-    size_increment : Price
+    size_increment : Quantity
         The minimum size increment.
-    multiplier : Decimal
+    multiplier : Quantity
         The contract value multiplier (determines tick value).
     lot_size : Quantity, optional
         The rounded lot unit size (standard/board).
@@ -249,6 +251,7 @@ cdef class Instrument(Data):
 
         self._min_price_increment_precision = min_increment_precision_from_cstr(pystr_to_cstr(str(self.price_increment)))
         self._min_size_increment_precision = min_increment_precision_from_cstr(pystr_to_cstr(str(self.size_increment)))
+        self._increment_pow10 = 10 ** -self._min_size_increment_precision
 
         # Assign tick scheme if named
         if self.tick_scheme_name is not None:
@@ -432,6 +435,24 @@ cdef class Instrument(Data):
         else:
             return self.quote_currency
 
+    cpdef Currency get_cost_currency(self):
+        """
+        Return the currency used for PnL calculations for the instrument.
+
+        - Standard linear instruments = quote_currency
+        - Inverse instruments = base_currency
+        - Quanto instruments TBD
+
+        Returns
+        -------
+        Currency
+
+        """
+        if self.is_inverse:
+            return self.base_currency
+        else:
+            return self.quote_currency
+
     cpdef Price make_price(self, value):
         """
         Return a new price from the given value using the instruments price
@@ -512,7 +533,109 @@ cdef class Instrument(Data):
 
         return self._tick_scheme.next_ask_price(value=value, n=num_ticks)
 
-    cpdef Quantity make_qty(self, value):
+    cpdef list next_bid_prices(self, double value, int num_ticks=100):
+        """
+        Return a list of prices up to `num_ticks` bid ticks away from value.
+
+        If a given price is between two ticks, the first price will be the nearest bid tick.
+        Returns as many valid ticks as possible up to `num_ticks`. Will return an empty list
+        if no valid ticks can be generated.
+
+        Parameters
+        ----------
+        value : double
+            The reference value.
+        num_ticks : int, default 100
+            The number of ticks to return.
+
+        Returns
+        -------
+        list[Decimal]
+            A list of bid prices as Decimal values.
+
+        Raises
+        ------
+        ValueError
+            If a tick scheme is not initialized.
+        """
+        if self._tick_scheme is None:
+            raise ValueError(
+                f"No tick scheme for instrument {self.id.to_str()}. "
+                "You can specify a tick scheme by passing a `tick_scheme_name` at initialization."
+            )
+
+        if num_ticks <= 0:
+            return []
+
+        cdef:
+            list prices = []
+            Price price
+            int i
+        for i in range(num_ticks):
+            try:
+                price = self._tick_scheme.next_bid_price(value=value, n=i)
+                if price is None:
+                    break
+                if self.min_price is not None and price < self.min_price:
+                    break
+                prices.append(price.as_decimal())
+            except Exception:
+                break
+
+        return prices
+
+    cpdef list next_ask_prices(self, double value, int num_ticks=100):
+        """
+        Return a list of prices up to `num_ticks` ask ticks away from value.
+
+        If a given price is between two ticks, the first price will be the nearest ask tick.
+        Returns as many valid ticks as possible up to `num_ticks`. Will return an empty list
+        if no valid ticks can be generated.
+
+        Parameters
+        ----------
+        value : double
+            The reference value.
+        num_ticks : int, default 100
+            The number of ticks to return.
+
+        Returns
+        -------
+        list[Decimal]
+            A list of ask prices as Decimal values.
+
+        Raises
+        ------
+        ValueError
+            If a tick scheme is not initialized.
+        """
+        if self._tick_scheme is None:
+            raise ValueError(
+                f"No tick scheme for instrument {self.id.to_str()}. "
+                "You can specify a tick scheme by passing a `tick_scheme_name` at initialization."
+            )
+
+        if num_ticks <= 0:
+            return []
+
+        cdef:
+            list prices = []
+            Price price
+            int i
+        for i in range(num_ticks):
+            try:
+                price = self._tick_scheme.next_ask_price(value=value, n=i)
+                if price is None:
+                    break
+                if self.max_price is not None and price > self.max_price:
+                    break
+                prices.append(price.as_decimal())
+            except Exception:
+                break
+
+        return prices
+
+    cpdef Quantity make_qty(self, value, bint round_down=False):
         """
         Return a new quantity from the given value using the instruments size
         precision.
@@ -521,6 +644,10 @@ cdef class Instrument(Data):
         ----------
         value : integer, float, str or Decimal
             The value of the quantity.
+        round_down : bool, default False
+            If True, always rounds down to the nearest valid increment.
+            If False, uses the `round` function (banker's rounding) which
+            rounds to the nearest even digit when exactly halfway between two values.
 
         Returns
         -------
@@ -534,9 +661,17 @@ cdef class Instrument(Data):
         """
         # Check if original_value is greater than zero and rounded_value is "effectively" zero
         cdef double original_value = float(value)
-        cdef double rounded_value = round(original_value, self._min_size_increment_precision)
-        cdef double epsilon = 10 ** -(self._min_size_increment_precision + 1)
-        if original_value > 0.0 and abs(rounded_value) < epsilon:
+        cdef double inc_pow10 = self._increment_pow10
+        cdef double rounded_value = 0.0
+
+        if round_down:
+            # Round down to the nearest valid increment
+            rounded_value = floor(original_value / inc_pow10) *inc_pow10
+        else:
+            # Use standard rounding behavior (banker's rounding)
+            rounded_value = round(original_value, self._min_size_increment_precision)
+
+        if original_value > 0 and rounded_value < inc_pow10 * 0.1:
             raise ValueError(
                 f"Invalid `value` for quantity: {value} was rounded to zero "
                 f"due to size increment {self.size_increment} "
@@ -614,10 +749,12 @@ cpdef list[Instrument] instruments_from_pyo3(list pyo3_instruments):
             instruments.append(BettingInstrument.from_pyo3_c(pyo3_instrument))
         elif isinstance(pyo3_instrument, nautilus_pyo3.BinaryOption):
             instruments.append(BinaryOption.from_pyo3_c(pyo3_instrument))
-        elif isinstance(pyo3_instrument, nautilus_pyo3.CryptoFuture):
-            instruments.append(CryptoFuture.from_pyo3_c(pyo3_instrument))
         elif isinstance(pyo3_instrument, nautilus_pyo3.CryptoPerpetual):
             instruments.append(CryptoPerpetual.from_pyo3_c(pyo3_instrument))
+        elif isinstance(pyo3_instrument, nautilus_pyo3.CryptoFuture):
+            instruments.append(CryptoFuture.from_pyo3_c(pyo3_instrument))
+        elif isinstance(pyo3_instrument, nautilus_pyo3.CryptoOption):
+            instruments.append(CryptoOption.from_pyo3_c(pyo3_instrument))
         elif isinstance(pyo3_instrument, nautilus_pyo3.CurrencyPair):
             instruments.append(CurrencyPair.from_pyo3_c(pyo3_instrument))
         elif isinstance(pyo3_instrument, nautilus_pyo3.Equity):
